@@ -13,7 +13,8 @@ import Date
 import Svg exposing (Svg)
 import Svg.Attributes exposing (stroke)
 import Round exposing (roundNum)
-import Dict
+import Dict exposing (Dict)
+import Tuple
 
 
 main : Program Never Model Msg
@@ -59,13 +60,23 @@ type alias Model =
     { runTitles : List String
     , searchField : String
     , runs : List Run
+    , graph : Title
     , hovered : Maybe Point
     }
 
 
 init : ( Model, Cmd Msg )
 init =
-    ( Model [] "" [] Nothing, Http.send LoadRunTitles (getRuns "") )
+    let
+        model =
+            { runTitles = []
+            , searchField = ""
+            , runs = []
+            , graph = "Mean Time / Concurrency"
+            , hovered = Nothing
+            }
+    in
+        ( model, Http.send LoadRunTitles (getRuns "") )
 
 
 type Msg
@@ -76,6 +87,44 @@ type Msg
     | LoadRunStats (Result Http.Error Run)
     | Hover (Maybe Point)
     | RunTitleClicked String
+    | ChangeGraphType String
+
+
+type alias Title =
+    String
+
+
+type alias YLegend =
+    String
+
+
+type alias XLegend =
+    String
+
+
+type alias XValueGetter =
+    Run -> Float
+
+
+type alias YValueGetter =
+    Run -> Float
+
+
+type Graph
+    = Scatter XLegend YLegend XValueGetter YValueGetter
+
+
+validGraphs : List ( Title, Graph )
+validGraphs =
+    let
+        baseScatter =
+            Scatter "Concurrency" "Resp. Time (s)" (.run >> .concurrency >> toFloat)
+    in
+        [ ( "Mean Time / Concurrency", baseScatter (.stats >> .meanTime) )
+        , ( "Fastest Time / Concurrency", baseScatter (.stats >> .minTime) )
+        , ( "Slowest Time / Concurrency", baseScatter (.stats >> .maxTime) )
+        , ( "Aggregated Time / Concurrency", baseScatter (.stats >> .totalTime) )
+        ]
 
 
 update : Msg -> Model -> ( Model, Cmd Msg )
@@ -118,6 +167,23 @@ update msg model =
         Hover point ->
             ( { model | hovered = point }, Cmd.none )
 
+        ChangeGraphType name ->
+            let
+                defaultType =
+                    validGraphs
+                        |> List.head
+                        |> Maybe.map Tuple.first
+                        |> Maybe.withDefault ""
+
+                newType =
+                    validGraphs
+                        |> List.filter (\( title, _ ) -> title == name)
+                        |> List.map Tuple.first
+                        |> List.head
+                        |> Maybe.withDefault defaultType
+            in
+                ( { model | graph = newType }, Cmd.none )
+
 
 getRuns : String -> Http.Request (List RunInfo)
 getRuns name =
@@ -144,7 +210,7 @@ view model =
         [ node "link" [ rel "stylesheet", href "/assets/main.css" ] []
         , div [ class "view" ]
             [ div [ class "view--left" ] [ leftPanel model.searchField model.runTitles ]
-            , div [ class "view--right" ] [ rightPanel model.hovered model.runs ]
+            , div [ class "view--right" ] [ rightPanel model ]
             ]
         ]
 
@@ -184,17 +250,38 @@ onEnter msg =
         on "keydown" (keyCode |> Decode.andThen isEnter)
 
 
-rightPanel : Maybe Point -> List Run -> Html Msg
-rightPanel hovered runs =
+rightPanel : Model -> Html Msg
+rightPanel { hovered, runs, graph } =
     case runs of
         [] ->
             text ""
 
         _ ->
             div [ class "view-plot view-plot__closed" ]
-                [ div [ class "view-plot--left" ] [ plotRuns hovered runs ]
-                , div [ class "view-plot--right" ] [ text "right2" ]
+                [ div [ class "view-plot--left" ] [ plotRuns graph hovered runs ]
+                , div [ class "view-plot--right" ] [ rightMostPanel graph ]
                 ]
+
+
+rightMostPanel : Title -> Html Msg
+rightMostPanel current =
+    div []
+        [ select [ onChange ChangeGraphType ] (List.map (renderGraphItem current) validGraphs) ]
+
+
+onChange : (String -> Msg) -> Attribute Msg
+onChange msg =
+    let
+        action =
+            Decode.at [ "target", "value" ] Decode.string
+                |> Decode.map msg
+    in
+        on "change" action
+
+
+renderGraphItem : Title -> ( Title, Graph ) -> Html Msg
+renderGraphItem current ( title, _ ) =
+    option [ value title, selected (current == title) ] [ text title ]
 
 
 pinkStroke : String
@@ -207,27 +294,40 @@ blueStroke =
     "#cfd8ea"
 
 
-plotRuns : Maybe Point -> List Run -> Html Msg
-plotRuns hovered runs =
-    viewSeriesCustom
-        { defaultSeriesPlotCustomizations
-            | horizontalAxis = rangeFrameAxis hovered (.x >> roundNum 3)
-            , margin = { top = 20, bottom = 20, left = 150, right = 40 }
-            , toDomainLowest = \y -> y - 0.3
-            , junk = legend
-        }
-        [ scatterPlot hovered ]
-        runs
+graphDesc : Title -> Maybe Graph
+graphDesc title =
+    validGraphs
+        |> List.filter (\( t, _ ) -> title == t)
+        |> List.map Tuple.second
+        |> List.head
 
 
-legend : PlotSummary -> List (JunkCustomizations Msg)
-legend summary =
+plotRuns : Title -> Maybe Point -> List Run -> Html Msg
+plotRuns graphTitle hovered runs =
+    case graphDesc graphTitle of
+        Just (Scatter xLegend yLegend xGetter yGetter) ->
+            viewSeriesCustom
+                { defaultSeriesPlotCustomizations
+                    | horizontalAxis = rangeFrameAxis hovered (.x >> roundNum 3)
+                    , margin = { top = 20, bottom = 20, left = 150, right = 40 }
+                    , toDomainLowest = \y -> y - 0.3
+                    , junk = legend xLegend yLegend
+                }
+                [ scatterPlot xGetter yGetter hovered ]
+                runs
+
+        Nothing ->
+            Debug.crash ("got invalid graph title: " ++ graphTitle)
+
+
+legend : XLegend -> YLegend -> PlotSummary -> List (JunkCustomizations Msg)
+legend xLegend yLegend summary =
     let
         verticalCenter =
             summary.y.dataMax / 2
     in
-        [ junk (title "Resp. time (s)") (summary.x.dataMin - 30) verticalCenter
-        , junk (title "Concurrency") summary.x.max (summary.y.dataMin - (summary.y.dataMin - summary.y.min) / 1.3)
+        [ junk (title yLegend) (summary.x.dataMin - 30) verticalCenter
+        , junk (title xLegend) summary.x.max (summary.y.dataMin - (summary.y.dataMin - summary.y.min) / 1.3)
         ]
 
 
@@ -240,11 +340,15 @@ title txt =
         txt
 
 
-scatterPlot : Maybe Point -> Series (List Run) Msg
-scatterPlot hinting =
+scatterPlot :
+    XValueGetter
+    -> YValueGetter
+    -> Maybe Point
+    -> Series (List Run) Msg
+scatterPlot xGetter yGetter hinting =
     { axis = rangeFrameAxis hinting (.y >> roundNum 3)
     , interpolation = None
-    , toDataPoints = List.map (rangeFrameHintDot hinting)
+    , toDataPoints = List.map (rangeFrameHintDot xGetter yGetter hinting)
     }
 
 
@@ -269,14 +373,19 @@ flashyLine x y hinted =
         Nothing
 
 
-rangeFrameHintDot : Maybe Point -> Run -> DataPoint Msg
-rangeFrameHintDot hinted { run, stats } =
+rangeFrameHintDot :
+    XValueGetter
+    -> YValueGetter
+    -> Maybe Point
+    -> Run
+    -> DataPoint Msg
+rangeFrameHintDot xGetter yGetter hinted run =
     let
         x =
-            toFloat run.concurrency
+            xGetter run
 
         y =
-            stats.meanTime
+            yGetter run
     in
         { view = Just (circle x y)
         , xLine = Maybe.andThen (flashyLine x y) hinted
