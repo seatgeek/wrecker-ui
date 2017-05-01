@@ -68,7 +68,7 @@ type alias Model =
     , runs : List Run
     , graph : Title
     , hovered : Maybe Point
-    , filteredGroup : Maybe String
+    , filteredGroups : List String
     }
 
 
@@ -81,7 +81,7 @@ init =
             , runs = []
             , graph = "Mean Time / Concurrency"
             , hovered = Nothing
-            , filteredGroup = Nothing
+            , filteredGroups = []
             }
     in
         ( model, Http.send LoadRunTitles (getRuns "") )
@@ -196,18 +196,13 @@ update msg model =
 
         ToggleFilterGroup group ->
             let
-                filteredGroup =
-                    case model.filteredGroup of
-                        Nothing ->
-                            Just group
-
-                        Just filtered ->
-                            if group == filtered then
-                                Nothing
-                            else
-                                Just group
+                filteredGroups =
+                    if List.member group model.filteredGroups then
+                        List.filter ((/=) group) model.filteredGroups
+                    else
+                        group :: model.filteredGroups
             in
-                ( { model | filteredGroup = filteredGroup }, Cmd.none )
+                ( { model | filteredGroups = filteredGroups }, Cmd.none )
 
 
 getRuns : String -> Http.Request (List RunInfo)
@@ -321,23 +316,23 @@ onEnter msg =
 
 
 rightPanel : Model -> Html Msg
-rightPanel { hovered, runs, graph, filteredGroup } =
+rightPanel { hovered, runs, graph, filteredGroups } =
     case runs of
         [] ->
             text ""
 
         _ ->
             div [ class "view-plot view-plot__closed" ]
-                [ div [ class "view-plot--left" ] [ plotRuns graph filteredGroup hovered runs ]
-                , div [ class "view-plot--right" ] [ rightMostPanel graph filteredGroup runs ]
+                [ div [ class "view-plot--left" ] [ plotRuns graph filteredGroups hovered runs ]
+                , div [ class "view-plot--right" ] [ rightMostPanel graph filteredGroups runs ]
                 ]
 
 
-rightMostPanel : Title -> Maybe String -> List Run -> Html Msg
-rightMostPanel current filteredGroup runs =
+rightMostPanel : Title -> List String -> List Run -> Html Msg
+rightMostPanel current filteredGroups runs =
     div []
         [ select [ onChange ChangeGraphType ] (List.map (renderGraphItem current) validGraphs)
-        , renderGroups filteredGroup runs
+        , renderGroups filteredGroups runs
         , h4 [] [ text "Pages" ]
         , renderPageList runs
         ]
@@ -348,28 +343,33 @@ renderGraphItem current ( title, _ ) =
     option [ value title, selected (current == title) ] [ text title ]
 
 
-renderGroups : Maybe String -> List Run -> Html Msg
-renderGroups filteredGroup runs =
+renderGroups : List String -> List Run -> Html Msg
+renderGroups filteredGroups runs =
     let
         groupNames =
             assignColors runs
                 |> EList.uniqueBy Tuple.first
                 |> List.sortBy Tuple.first
     in
-        ul [] (List.map (renderGroupItem filteredGroup) groupNames)
+        ul [] (List.map (renderGroupItem filteredGroups) groupNames)
 
 
-renderGroupItem : Maybe String -> GraphData -> Html Msg
+renderGroupItem : List String -> GraphData -> Html Msg
 renderGroupItem filtered ( color, runGroup ) =
     let
-        grayedOut =
-            filtered
-                |> Maybe.map (\f -> f /= runGroup.run.groupName)
-                |> Maybe.withDefault False
+        isFiltered =
+            case filtered of
+                [] ->
+                    False
+
+                _ ->
+                    filtered
+                        |> List.filter (\g -> g == runGroup.run.groupName)
+                        |> List.isEmpty
     in
         li
             [ style [ ( "cursor", "pointer" ) ]
-            , classList [ ( "grayed-out", grayedOut ) ]
+            , classList [ ( "grayed-out", isFiltered ) ]
             , onClick (ToggleFilterGroup runGroup.run.groupName)
             ]
             [ span
@@ -416,8 +416,8 @@ graphDesc title =
         |> List.head
 
 
-plotRuns : Title -> Maybe String -> Maybe Point -> List Run -> Html Msg
-plotRuns graphTitle onlyGroup hovered runs =
+plotRuns : Title -> List String -> Maybe Point -> List Run -> Html Msg
+plotRuns graphTitle filteredGroups hovered runs =
     case graphDesc graphTitle of
         Just (Scatter xLegend yLegend xGetter yGetter) ->
             viewSeriesCustom
@@ -428,7 +428,7 @@ plotRuns graphTitle onlyGroup hovered runs =
                     , junk = legend xLegend yLegend
                 }
                 [ scatterPlot xGetter yGetter hovered ]
-                (assignColors runs |> filterGroups onlyGroup)
+                (assignColors runs |> filterGroups filteredGroups)
 
         Nothing ->
             Debug.crash ("got invalid graph title: " ++ graphTitle)
@@ -459,15 +459,15 @@ blueStroke =
     "#cfd8ea"
 
 
-filterGroups : Maybe String -> List GraphData -> List GraphData
-filterGroups filter data =
-    case filter of
-        Nothing ->
+filterGroups : List String -> List GraphData -> List GraphData
+filterGroups filters data =
+    case filters of
+        [] ->
             data
 
-        Just f ->
+        _ ->
             data
-                |> List.filter (\( _, d ) -> d.run.groupName == f)
+                |> List.filter (\( _, d ) -> List.member d.run.groupName filters)
 
 
 scatterPlot :
