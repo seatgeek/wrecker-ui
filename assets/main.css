@@ -42,6 +42,9 @@ a:hover {
 	float: right;
 }
 
+.view--right .grayed-out {
+	opacity: 0.3;
+}
 
 
 /* View header */
