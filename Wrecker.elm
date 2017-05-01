@@ -136,6 +136,7 @@ validGraphs =
         , ( "Aggregated Time / Concurrency", baseScatter (.stats >> .totalTime) )
         , ( "Variance / Concurrency", baseScatter (.stats >> .variance) )
         , ( "Mean Time Comparison", Timeline "Resp. Time (s)" (.stats >> .meanTime) )
+        , ( "Slowest Time Comparison", Timeline "Resp. Time (s)" (.stats >> .maxTime) )
         , ( "Variance Comparison", Timeline "Resp. Time (s)" (.stats >> .variance) )
         ]
 
@@ -384,9 +385,10 @@ renderGroups : List String -> List Run -> Html Msg
 renderGroups filteredGroups runs =
     let
         groups =
-            assignColors runs
+            runs
+                |> List.sortBy (.run >> .groupName)
+                |> assignColors
                 |> EList.uniqueBy Tuple.first
-                |> List.sortBy Tuple.first
     in
         ul []
             (List.map
