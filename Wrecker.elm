@@ -183,7 +183,11 @@ update msg model =
             ( model, Cmd.none )
 
         LoadRunStats (Ok run) ->
-            ( { model | runs = run :: model.runs }, Cmd.none )
+            let
+                newRuns =
+                    run :: model.runs
+            in
+                ( { model | runs = newRuns, filteredGroups = defaultFilteredGroups newRuns }, Cmd.none )
 
         Hover point ->
             ( { model | hovered = point }, Cmd.none )
@@ -210,12 +214,16 @@ update msg model =
                 filteredGroups =
                     if List.member group model.filteredGroups then
                         List.filter ((/=) group) model.filteredGroups
-                    else if List.length (groupNames model.runs) - 1 == List.length model.filteredGroups then
-                        []
                     else
                         group :: model.filteredGroups
+
+                newFilteredGroups =
+                    if List.isEmpty filteredGroups then
+                        defaultFilteredGroups model.runs
+                    else
+                        filteredGroups
             in
-                ( { model | filteredGroups = filteredGroups }, Cmd.none )
+                ( { model | filteredGroups = newFilteredGroups }, Cmd.none )
 
 
 getRuns : String -> Http.Request (List RunInfo)
@@ -231,6 +239,15 @@ getSingleRun id =
 
 assignColors : List Run -> List GraphData
 assignColors runs =
+    runs
+        |> buildGroups
+        |> EList.zip allColors
+        |> List.map (\( color, ( _, runGroup ) ) -> List.map (\r -> ( color, r )) runGroup)
+        |> List.concat
+
+
+buildGroups : List Run -> List ( String, List Run )
+buildGroups runs =
     let
         insertOrUpdate run currentList =
             case currentList of
@@ -247,9 +264,13 @@ assignColors runs =
             |> List.map (\r -> ( r.run.groupName, r ))
             |> List.foldl buildDict Dict.empty
             |> Dict.toList
-            |> EList.zip allColors
-            |> List.map (\( color, ( _, runGroup ) ) -> List.map (\r -> ( color, r )) runGroup)
-            |> List.concat
+
+
+defaultFilteredGroups : List Run -> List String
+defaultFilteredGroups runs =
+    runs
+        |> buildGroups
+        |> List.map Tuple.first
 
 
 allColors : List String
@@ -358,18 +379,17 @@ renderGraphItem current ( title, _ ) =
 
 renderGroups : List String -> List Run -> Html Msg
 renderGroups filteredGroups runs =
-    ul []
-        (List.map
-            (renderGroupItem filteredGroups)
-            (groupNames runs)
-        )
-
-
-groupNames : List Run -> List ( String, Run )
-groupNames runs =
-    assignColors runs
-        |> EList.uniqueBy Tuple.first
-        |> List.sortBy Tuple.first
+    let
+        groups =
+            assignColors runs
+                |> EList.uniqueBy Tuple.first
+                |> List.sortBy Tuple.first
+    in
+        ul []
+            (List.map
+                (renderGroupItem filteredGroups)
+                groups
+            )
 
 
 renderGroupItem : List String -> GraphData -> Html Msg
