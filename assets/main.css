@@ -26,7 +26,7 @@ a:hover {
 	font-family: sans-serif;
 	color: #7F7F7F;
 	font-weight: 200;
-	margin: 10em auto 0px;
+	margin: 5em auto 0px;
 	overflow: hidden;
 }
 
@@ -60,6 +60,10 @@ a:hover {
 	font-weight: 200;
 }
 
+.view-header__search {
+	padding-left: 5px;
+}
+
 .view-header__runs {
 	list-style: none;
 }
@@ -88,11 +92,19 @@ a:hover {
 	width: 25%;
 }
 
+.view-plot--right ul {
+	list-style: none;
+	padding-left: 2px;
+	font-size: 12px;
+}
+
+.view-plot--right ul li {
+	margin:5px 0;
+}
 
 .view-footer {
 	display: none;
 }
-
 
 .view-toggler {
 	text-align: right;
@@ -133,7 +145,7 @@ a:hover {
 /* Smaller screens */
 
 
-@media (max-width: 1500px) {
+@media (max-width: 1000px) {
 	.view-plot, .view-footer {
 		display: block;
 	}

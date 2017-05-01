@@ -13,7 +13,7 @@ import Date
 import Svg exposing (Svg)
 import Svg.Attributes exposing (stroke)
 import Round exposing (roundNum)
-import Dict exposing (Dict)
+import Dict
 import Tuple
 
 
@@ -124,6 +124,7 @@ validGraphs =
         , ( "Fastest Time / Concurrency", baseScatter (.stats >> .minTime) )
         , ( "Slowest Time / Concurrency", baseScatter (.stats >> .maxTime) )
         , ( "Aggregated Time / Concurrency", baseScatter (.stats >> .totalTime) )
+        , ( "Variance / Concurrency", baseScatter (.stats >> .variance) )
         ]
 
 
@@ -219,23 +220,25 @@ leftPanel : String -> List String -> Html Msg
 leftPanel defaultTitle runTitles =
     header [ class "view-header" ]
         [ h1 [ class "view-header__title" ] [ text "Wrecker-UI" ]
-        , input
-            [ type_ "text"
-            , name "run_name"
-            , placeholder "Search Run"
-            , value defaultTitle
-            , onEnter SearchButtonClicked
-            , onInput SearchFieldUpdated
+        , div [ class "view-header__search" ]
+            [ input
+                [ type_ "text"
+                , name "run_name"
+                , placeholder "Search Run"
+                , defaultValue defaultTitle
+                , onEnter SearchButtonClicked
+                , onInput SearchFieldUpdated
+                ]
+                []
+            , button [ onClick SearchButtonClicked ] [ text "go" ]
             ]
-            []
-        , button [ onClick SearchButtonClicked ] [ text "go" ]
         , ul [ class "view-header__runs" ] (List.map runListItem runTitles)
         ]
 
 
 runListItem : String -> Html Msg
 runListItem title =
-    li [ onClick (RunTitleClicked title) ] [ a [ href "#" ] [ text title ] ]
+    li [ onClick (RunTitleClicked title) ] [ a [] [ text title ] ]
 
 
 onEnter : Msg -> Attribute Msg
@@ -259,14 +262,33 @@ rightPanel { hovered, runs, graph } =
         _ ->
             div [ class "view-plot view-plot__closed" ]
                 [ div [ class "view-plot--left" ] [ plotRuns graph hovered runs ]
-                , div [ class "view-plot--right" ] [ rightMostPanel graph ]
+                , div [ class "view-plot--right" ] [ rightMostPanel graph runs ]
                 ]
 
 
-rightMostPanel : Title -> Html Msg
-rightMostPanel current =
+rightMostPanel : Title -> List Run -> Html Msg
+rightMostPanel current runs =
     div []
-        [ select [ onChange ChangeGraphType ] (List.map (renderGraphItem current) validGraphs) ]
+        [ select [ onChange ChangeGraphType ] (List.map (renderGraphItem current) validGraphs)
+        , renderPageList runs
+        ]
+
+
+renderPageList runs =
+    ul [] (List.map renderPageItem (uniquePages runs))
+
+
+renderPageItem page =
+    li [] [ text page ]
+
+
+uniquePages runs =
+    runs
+        |> List.map .pages
+        |> List.concat
+        |> List.map (\p -> ( p, 1 ))
+        |> Dict.fromList
+        |> Dict.keys
 
 
 onChange : (String -> Msg) -> Attribute Msg
