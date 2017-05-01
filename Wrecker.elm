@@ -121,6 +121,7 @@ type alias YValueGetter =
 
 type Graph
     = Scatter XLegend YLegend XValueGetter YValueGetter
+    | Timeline YLegend YValueGetter
 
 
 validGraphs : List ( Title, Graph )
@@ -134,6 +135,8 @@ validGraphs =
         , ( "Slowest Time / Concurrency", baseScatter (.stats >> .maxTime) )
         , ( "Aggregated Time / Concurrency", baseScatter (.stats >> .totalTime) )
         , ( "Variance / Concurrency", baseScatter (.stats >> .variance) )
+        , ( "Mean Time Comparison", Timeline "Resp. Time (s)" (.stats >> .meanTime) )
+        , ( "Variance Comparison", Timeline "Resp. Time (s)" (.stats >> .variance) )
         ]
 
 
@@ -458,18 +461,62 @@ plotRuns : Title -> List String -> Maybe Point -> List Run -> Html Msg
 plotRuns graphTitle filteredGroups hovered runs =
     case graphDesc graphTitle of
         Just (Scatter xLegend yLegend xGetter yGetter) ->
-            viewSeriesCustom
-                { defaultSeriesPlotCustomizations
-                    | horizontalAxis = rangeFrameAxis hovered (.x >> roundNum 3)
-                    , margin = { top = 20, bottom = 20, left = 150, right = 40 }
-                    , toDomainLowest = \y -> y - 0.3
-                    , junk = legend xLegend yLegend
-                }
+            basicSeries hovered
+                xLegend
+                yLegend
                 [ scatterPlot xGetter yGetter hovered ]
                 (assignColors runs |> filterGroups filteredGroups)
 
+        Just (Timeline yLegend yGetter) ->
+            let
+                runData =
+                    runs
+                        |> List.filter (\r -> r.run.concurrency == maxConcurrency)
+
+                dates =
+                    runData
+                        |> List.map (.run >> .created >> Date.toTime)
+                        |> EList.unique
+                        |> List.sort
+                        |> List.indexedMap (\index date -> ( date, toFloat index ))
+                        |> Dict.fromList
+
+                dateGetter d =
+                    dates
+                        |> Dict.get (Date.toTime (d.run.created))
+                        |> Maybe.withDefault 0
+
+                maxConcurrency =
+                    runs
+                        |> List.map (.run >> .concurrency)
+                        |> List.maximum
+                        |> Maybe.withDefault 0
+            in
+                basicSeries hovered
+                    ""
+                    yLegend
+                    [ linePlot dateGetter yGetter hovered ]
+                    (assignColors runData)
+
         Nothing ->
             Debug.crash ("got invalid graph title: " ++ graphTitle)
+
+
+basicSeries :
+    Maybe Point
+    -> XLegend
+    -> YLegend
+    -> List (Series data Msg)
+    -> data
+    -> Html Msg
+basicSeries hovered xLegend yLegend =
+    viewSeriesCustom
+        { defaultSeriesPlotCustomizations
+            | horizontalAxis = rangeFrameAxis hovered (.x >> roundNum 3)
+            , margin = { top = 20, bottom = 20, left = 150, right = 40 }
+            , toDomainLowest = \y -> y - 0.3
+            , junk = legend xLegend yLegend
+        }
 
 
 legend : XLegend -> YLegend -> PlotSummary -> List (JunkCustomizations Msg)
@@ -589,6 +636,37 @@ hintLabel hinted toValue =
     hinted
         |> Maybe.map (toValue >> simpleLabel >> List.singleton)
         |> Maybe.withDefault []
+
+
+linePlot :
+    XValueGetter
+    -> YValueGetter
+    -> Maybe Point
+    -> Series (List GraphData) Msg
+linePlot xGetter yGetter hinting =
+    { axis = hintedAxisAtMin hinting
+    , interpolation = Monotone Nothing [ stroke blueStroke ]
+    , toDataPoints = List.map (rangeFrameHintDot xGetter yGetter hinting)
+    }
+
+
+hintedAxisAtMin : Maybe Point -> Axis
+hintedAxisAtMin hinted =
+    customAxis <|
+        \summary ->
+            { position = Basics.min
+            , axisLine = Nothing
+            , ticks = List.map simpleTick (decentPositions summary)
+            , labels =
+                case hinted of
+                    Nothing ->
+                        (List.map simpleLabel (decentPositions summary))
+                            ++ [ roundNum 3 summary.dataMax |> simpleLabel ]
+
+                    Just _ ->
+                        hintLabel hinted (.y >> roundNum 3)
+            , flipAnchor = False
+            }
 
 
 
