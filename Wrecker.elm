@@ -13,8 +13,9 @@ import Date
 import Svg exposing (Svg)
 import Svg.Attributes exposing (stroke)
 import Round exposing (roundNum)
-import Dict
+import Dict exposing (Dict)
 import Tuple
+import List.Extra as EList
 
 
 main : Program Never Model Msg
@@ -44,6 +45,7 @@ type alias Stats =
 type alias RunInfo =
     { created : Date.Date
     , concurrency : Int
+    , groupName : String
     , id : Int
     , match : String
     }
@@ -54,6 +56,10 @@ type alias Run =
     , stats : Stats
     , run : RunInfo
     }
+
+
+type alias GraphData =
+    ( String, Run )
 
 
 type alias Model =
@@ -197,12 +203,54 @@ getSingleRun id =
     Http.get ("http://localhost:3000/runs/" ++ toString id) decodeRun
 
 
+assignColors : List Run -> List GraphData
+assignColors runs =
+    let
+        insertOrUpdate run currentList =
+            case currentList of
+                Nothing ->
+                    Just [ run ]
+
+                Just l ->
+                    Just (run :: l)
+
+        buildDict ( groupName, run ) dict =
+            Dict.update groupName (insertOrUpdate run) dict
+    in
+        runs
+            |> List.map (\r -> ( r.run.groupName, r ))
+            |> List.foldl buildDict Dict.empty
+            |> Dict.toList
+            |> EList.zip allColors
+            |> List.map (\( color, ( _, runGroup ) ) -> List.map (\r -> ( color, r )) runGroup)
+            |> List.concat
+
+
+allColors : List String
+allColors =
+    [ "#ff9edf"
+    , "#cfd8ea"
+    , "#77DD77"
+    , "#AEC6CF"
+    , "#CB99C9"
+    , "#B39EB5"
+    , "#FFB347"
+    , "#FF6961"
+    , "#836953"
+    , "#779ECB"
+    , "#FDFD96"
+    , "#F49AC2"
+    , "#CFCFC4"
+    , "#B19CD9"
+    , "#03C03C"
+    ]
+
+
 extractTitles : List RunInfo -> List String
 extractTitles runs =
     runs
-        |> List.map (\{ match } -> ( match, 1 ))
-        |> Dict.fromList
-        |> Dict.keys
+        |> List.map .match
+        |> EList.unique
 
 
 view : Model -> Html Msg
@@ -274,21 +322,22 @@ rightMostPanel current runs =
         ]
 
 
+renderPageList : List Run -> Html Msg
 renderPageList runs =
     ul [] (List.map renderPageItem (uniquePages runs))
 
 
+renderPageItem : String -> Html Msg
 renderPageItem page =
     li [] [ text page ]
 
 
+uniquePages : List Run -> List String
 uniquePages runs =
     runs
         |> List.map .pages
         |> List.concat
-        |> List.map (\p -> ( p, 1 ))
-        |> Dict.fromList
-        |> Dict.keys
+        |> EList.unique
 
 
 onChange : (String -> Msg) -> Attribute Msg
@@ -336,7 +385,7 @@ plotRuns graphTitle hovered runs =
                     , junk = legend xLegend yLegend
                 }
                 [ scatterPlot xGetter yGetter hovered ]
-                runs
+                (assignColors runs)
 
         Nothing ->
             Debug.crash ("got invalid graph title: " ++ graphTitle)
@@ -366,7 +415,7 @@ scatterPlot :
     XValueGetter
     -> YValueGetter
     -> Maybe Point
-    -> Series (List Run) Msg
+    -> Series (List GraphData) Msg
 scatterPlot xGetter yGetter hinting =
     { axis = rangeFrameAxis hinting (.y >> roundNum 3)
     , interpolation = None
@@ -374,13 +423,13 @@ scatterPlot xGetter yGetter hinting =
     }
 
 
-circle : Float -> Float -> Svg Msg
-circle x y =
+circle : String -> Float -> Float -> Svg Msg
+circle color x y =
     Svg.circle
         [ r "5"
         , stroke "transparent"
         , strokeWidth "3px"
-        , fill pinkStroke
+        , fill color
         , SvgEvent.onMouseOver (Hover (Just { x = x, y = y }))
         , SvgEvent.onMouseOut (Hover Nothing)
         ]
@@ -399,9 +448,9 @@ rangeFrameHintDot :
     XValueGetter
     -> YValueGetter
     -> Maybe Point
-    -> Run
+    -> GraphData
     -> DataPoint Msg
-rangeFrameHintDot xGetter yGetter hinted run =
+rangeFrameHintDot xGetter yGetter hinted ( color, run ) =
     let
         x =
             xGetter run
@@ -409,7 +458,7 @@ rangeFrameHintDot xGetter yGetter hinted run =
         y =
             yGetter run
     in
-        { view = Just (circle x y)
+        { view = Just (circle color x y)
         , xLine = Maybe.andThen (flashyLine x y) hinted
         , yLine = Maybe.andThen (flashyLine x y) hinted
         , xTick = Just (simpleTick x)
@@ -479,6 +528,7 @@ decodeRunInfo =
     Pipeline.decode RunInfo
         |> Pipeline.required "created" (Decode.string |> Decode.andThen decodeDateTime)
         |> Pipeline.required "concurrency" Decode.int
+        |> Pipeline.required "groupName" Decode.string
         |> Pipeline.required "id" Decode.int
         |> Pipeline.required "match" Decode.string
 

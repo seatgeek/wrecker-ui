@@ -2,6 +2,7 @@ CREATE TABLE runs (
 	id INTEGER PRIMARY KEY AUTOINCREMENT,
 	concurrency INTEGER NOT NULL,
 	test_match TEXT,
+	group_name TEXT,
 	created DATETIME
 );
 

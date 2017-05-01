@@ -54,6 +54,7 @@ newtype SQLPage =
 data RunInfo = RunInfo
   { id :: Int
   , match :: Text
+  , groupName :: Text
   , concurrency :: Int
   , created :: UTCTime
   } deriving (Eq, Show, Generic)
@@ -96,19 +97,20 @@ createRun :: SQL.Connection -> ActionM ()
 createRun conn = do
   conc <- readEither <$> param "concurrency"
   title <- param "title"
+  group <- optionalParam "groupName"
   case conc of
     Left err -> do
       json $ object ["error" .= ("Invalid concurrency number" :: Text), "reason" .= err]
       status badRequest400
     Right concurrency -> do
-      newId <- liftAndCatchIO (doStoreRun concurrency title)
+      newId <- liftAndCatchIO (doStoreRun concurrency title group)
       json $ object ["success" .= True, "id" .= newId]
       status created201
   where
-    doStoreRun :: Int -> Text -> IO Int
-    doStoreRun concurrency title =
+    doStoreRun :: Int -> Text -> Text -> IO Int
+    doStoreRun concurrency title group =
       SQL.withTransaction conn $ do
-        SQL.execute conn insertRunQuery (concurrency, title)
+        SQL.execute conn insertRunQuery (concurrency, title, group)
         newId <- fromIntegral <$> SQL.lastInsertRowId conn
         return newId
 
@@ -196,7 +198,7 @@ optionalParam name = param name `rescue` (\_ -> return mempty)
 ----------------------------------
 insertRunQuery :: SQL.Query
 insertRunQuery =
-  "INSERT INTO runs (concurrency, test_match, created) VALUES (?, ?, DATETIME('now'))"
+  "INSERT INTO runs (concurrency, test_match, group_name, created) VALUES (?, ?, ?, DATETIME('now'))"
 
 insertRollupQuery :: SQL.Query
 insertRollupQuery =
@@ -222,10 +224,10 @@ pagesListQuery = "SELECT DISTINCT page_url FROM pages where run_id = ?"
 
 listRunsQuery :: SQL.Query
 listRunsQuery =
-  "SELECT id, test_match, concurrency, created FROM runs WHERE test_match LIKE ? ORDER BY created DESC"
+  "SELECT id, test_match, group_name, concurrency, created FROM runs WHERE test_match LIKE ? ORDER BY created DESC"
 
 fetchRunQuery :: SQL.Query
-fetchRunQuery = "SELECT id, test_match, concurrency, created FROM runs WHERE id = ?"
+fetchRunQuery = "SELECT id, test_match, group_name, concurrency, created FROM runs WHERE id = ?"
 
 fetchPageStatsQuery :: SQL.Query
 fetchPageStatsQuery =
@@ -292,6 +294,7 @@ instance FromRow RunInfo where
   fromRow = do
     id <- SQL.field
     match <- SQL.field
+    groupName <- SQL.field
     concurrency <- SQL.field
     created <- SQL.field
     return RunInfo {..}
