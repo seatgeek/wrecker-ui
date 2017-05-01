@@ -144,10 +144,21 @@ update msg model =
             ( { model | searchField = name }, Cmd.none )
 
         SearchButtonClicked ->
-            ( { model | runs = [] }, Http.send LoadRunList (getRuns model.searchField) )
+            ( { model
+                | runs = []
+                , filteredGroups = []
+              }
+            , Http.send LoadRunList (getRuns model.searchField)
+            )
 
         RunTitleClicked name ->
-            ( { model | searchField = name, runs = [] }, Http.send LoadRunList (getRuns name) )
+            ( { model
+                | searchField = name
+                , runs = []
+                , filteredGroups = []
+              }
+            , Http.send LoadRunList (getRuns name)
+            )
 
         LoadRunTitles (Err _) ->
             ( model, Cmd.none )
@@ -199,6 +210,8 @@ update msg model =
                 filteredGroups =
                     if List.member group model.filteredGroups then
                         List.filter ((/=) group) model.filteredGroups
+                    else if List.length (groupNames model.runs) - 1 == List.length model.filteredGroups then
+                        []
                     else
                         group :: model.filteredGroups
             in
@@ -324,12 +337,12 @@ rightPanel { hovered, runs, graph, filteredGroups } =
         _ ->
             div [ class "view-plot view-plot__closed" ]
                 [ div [ class "view-plot--left" ] [ plotRuns graph filteredGroups hovered runs ]
-                , div [ class "view-plot--right" ] [ rightMostPanel graph filteredGroups runs ]
+                , div [ class "view-plot--right" ] [ rightmostPanel graph filteredGroups runs ]
                 ]
 
 
-rightMostPanel : Title -> List String -> List Run -> Html Msg
-rightMostPanel current filteredGroups runs =
+rightmostPanel : Title -> List String -> List Run -> Html Msg
+rightmostPanel current filteredGroups runs =
     div []
         [ select [ onChange ChangeGraphType ] (List.map (renderGraphItem current) validGraphs)
         , renderGroups filteredGroups runs
@@ -345,13 +358,18 @@ renderGraphItem current ( title, _ ) =
 
 renderGroups : List String -> List Run -> Html Msg
 renderGroups filteredGroups runs =
-    let
-        groupNames =
-            assignColors runs
-                |> EList.uniqueBy Tuple.first
-                |> List.sortBy Tuple.first
-    in
-        ul [] (List.map (renderGroupItem filteredGroups) groupNames)
+    ul []
+        (List.map
+            (renderGroupItem filteredGroups)
+            (groupNames runs)
+        )
+
+
+groupNames : List Run -> List ( String, Run )
+groupNames runs =
+    assignColors runs
+        |> EList.uniqueBy Tuple.first
+        |> List.sortBy Tuple.first
 
 
 renderGroupItem : List String -> GraphData -> Html Msg
