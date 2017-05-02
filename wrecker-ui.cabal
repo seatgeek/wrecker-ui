@@ -17,3 +17,4 @@ executable          wrecker-ui
                   , containers
                   , http-types
                   , wai-cors
+                  , directory

@@ -1,12 +1,16 @@
 {-# LANGUAGE OverloadedStrings, RecordWildCards, NamedFieldPuns,
   DeriveGeneric #-}
 
+import Control.Exception (try, SomeException)
 import Data.Aeson hiding (json)
 import Data.Aeson.Types (Parser)
 import qualified Data.Map as Map
 import Data.Map (Map)
 import Data.Monoid ((<>))
+import Data.String (fromString)
 import Data.Text (Text)
+import qualified Data.Text as Text
+import Data.Text.IO as T (readFile)
 import qualified Data.Text.Internal.Lazy as LText
 import Data.Time.Clock (UTCTime)
 import qualified Database.SQLite.Simple as SQL
@@ -16,6 +20,8 @@ import GHC.Generics
 import Network.HTTP.Types
 import Network.Wai.Middleware.Cors (simpleCors)
 import Prelude hiding (id)
+import qualified System.Directory as Dir
+import System.Environment (getEnv)
 import Web.Scotty
 
 data WreckerRun = WreckerRun
@@ -61,11 +67,22 @@ data RunInfo = RunInfo
 
 main :: IO ()
 main = do
-  conn <- SQL.open "wrecker.db"
+  folder <- findAssetsFolder
+  conn <- initDB folder
   scotty 3000 $ -- Let's declare the routes and handlers
    do
     middleware simpleCors
-    get "/" serveIndexHtml
+    -- ^ Useful when developing the elm app using a separate elm-live server
+    get "/" $ do
+      setHeader "Content-Type" "text/html; charset=utf-8"
+      file (folder <> "index.html")
+    get "/app.js" $ do
+      setHeader "Content-Type" "application/javascript"
+      file (folder <> "app.js")
+    get "/main.css" $ do
+      setHeader "Content-Type" "text/css"
+      file (folder <> "main.css")
+    -- ^ Serves the few static files we have
     get "/runs" (listRuns conn)
     --  ^ Gets the list of runs that have been stored. Optionally filtering by "match"
     post "/runs" (createRun conn)
@@ -77,13 +94,37 @@ main = do
     get "/runs/:id/page" (getPageStats conn)
 
 ----------------------------------
+-- App initialization
+----------------------------------
+
+findAssetsFolder :: IO String
+findAssetsFolder = do
+  f <- try (getEnv "WRECKER_ASSETS")
+  let folder =
+        case f :: Either SomeException String of
+          Left _ -> "assets/"
+          Right path -> path <> "/"
+  exists <- Dir.doesFileExist (folder <> "app.js")
+  if not exists
+    then error
+           "Could not find the assets folder. Set the WRECKER_ASSETS env variable with the full path to it"
+    else return folder
+
+initDB :: String -> IO SQL.Connection
+initDB base = do
+  conn <- SQL.open "wrecker.db"
+  tables <- SQL.query_ conn "SELECT name FROM sqlite_master ORDER BY name" :: IO [[Text]]
+  if length tables < 3
+    then do
+      schema <- T.readFile (base <> "assets/schema.sql")
+      let statements = filter (/= Text.empty) (Text.splitOn ";\n" $ schema)
+      mapM_ (SQL.execute_ conn . fromString . Text.unpack) statements
+      return conn
+    else return conn
+
+----------------------------------
 -- Controllers
 ----------------------------------
-serveIndexHtml :: ActionM ()
-serveIndexHtml = do
-  setHeader "Content-Type" "text/html; charset=utf-8"
-  file "index.html"
-
 listRuns :: SQL.Connection -> ActionM ()
 listRuns conn = do
   match <- optionalParam "match"
