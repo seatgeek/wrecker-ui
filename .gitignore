@@ -8,3 +8,5 @@ cabal.sandbox.config
 *.keter
 *.db
 elm-stuff
+wrecker-ui-*
+assets/app.js
