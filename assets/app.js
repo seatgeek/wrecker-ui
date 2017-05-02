@@ -14169,6 +14169,61 @@ var _user$project$Main$decodeDateTime = function (datetimeString) {
 		return _elm_lang$core$Json_Decode$succeed(_p0._0);
 	}
 };
+var _user$project$Main$onChangeInt = function (msg) {
+	var action = A2(
+		_elm_lang$core$Json_Decode$map,
+		msg,
+		A2(
+			_elm_lang$core$Json_Decode$andThen,
+			function (txt) {
+				var _p1 = _elm_lang$core$String$toInt(txt);
+				if (_p1.ctor === 'Ok') {
+					return _elm_lang$core$Json_Decode$succeed(_p1._0);
+				} else {
+					return _elm_lang$core$Json_Decode$fail(_p1._0);
+				}
+			},
+			A2(
+				_elm_lang$core$Json_Decode$at,
+				{
+					ctor: '::',
+					_0: 'target',
+					_1: {
+						ctor: '::',
+						_0: 'value',
+						_1: {ctor: '[]'}
+					}
+				},
+				_elm_lang$core$Json_Decode$string)));
+	return A2(_elm_lang$html$Html_Events$on, 'change', action);
+};
+var _user$project$Main$onChange = function (msg) {
+	var action = A2(
+		_elm_lang$core$Json_Decode$map,
+		msg,
+		A2(
+			_elm_lang$core$Json_Decode$at,
+			{
+				ctor: '::',
+				_0: 'target',
+				_1: {
+					ctor: '::',
+					_0: 'value',
+					_1: {ctor: '[]'}
+				}
+			},
+			_elm_lang$core$Json_Decode$string));
+	return A2(_elm_lang$html$Html_Events$on, 'change', action);
+};
+var _user$project$Main$onEnter = function (msg) {
+	var isEnter = function (code) {
+		return _elm_lang$core$Native_Utils.eq(code, 13) ? _elm_lang$core$Json_Decode$succeed(msg) : _elm_lang$core$Json_Decode$fail('not ENTER');
+	};
+	return A2(
+		_elm_lang$html$Html_Events$on,
+		'keydown',
+		A2(_elm_lang$core$Json_Decode$andThen, isEnter, _elm_lang$html$Html_Events$keyCode));
+};
 var _user$project$Main$hintLabel = F2(
 	function (hinted, toValue) {
 		return A2(
@@ -14176,10 +14231,10 @@ var _user$project$Main$hintLabel = F2(
 			{ctor: '[]'},
 			A2(
 				_elm_lang$core$Maybe$map,
-				function (_p1) {
+				function (_p2) {
 					return _elm_lang$core$List$singleton(
 						_terezka$elm_plot$Plot$simpleLabel(
-							toValue(_p1)));
+							toValue(_p2)));
 				},
 				hinted));
 	});
@@ -14194,8 +14249,8 @@ var _user$project$Main$hintedAxisAtMin = function (hinted) {
 					_terezka$elm_plot$Plot$simpleTick,
 					_terezka$elm_plot$Plot$decentPositions(summary)),
 				labels: function () {
-					var _p2 = hinted;
-					if (_p2.ctor === 'Nothing') {
+					var _p3 = hinted;
+					if (_p3.ctor === 'Nothing') {
 						return A2(
 							_elm_lang$core$Basics_ops['++'],
 							A2(
@@ -14212,13 +14267,13 @@ var _user$project$Main$hintedAxisAtMin = function (hinted) {
 						return A2(
 							_user$project$Main$hintLabel,
 							hinted,
-							function (_p3) {
+							function (_p4) {
 								return A2(
 									_myrho$elm_round$Round$roundNum,
 									3,
 									function (_) {
 										return _.y;
-									}(_p3));
+									}(_p4));
 							});
 					}
 				}(),
@@ -14235,9 +14290,9 @@ var _user$project$Main$rangeFrameAxis = F2(
 					axisLine: _elm_lang$core$Maybe$Nothing,
 					ticks: A2(
 						_elm_lang$core$List$map,
-						function (_p4) {
+						function (_p5) {
 							return _terezka$elm_plot$Plot$simpleTick(
-								A2(_myrho$elm_round$Round$roundNum, 3, _p4));
+								A2(_myrho$elm_round$Round$roundNum, 3, _p5));
 						},
 						{
 							ctor: '::',
@@ -14249,13 +14304,13 @@ var _user$project$Main$rangeFrameAxis = F2(
 							}
 						}),
 					labels: function () {
-						var _p5 = hinted;
-						if (_p5.ctor === 'Nothing') {
+						var _p6 = hinted;
+						if (_p6.ctor === 'Nothing') {
 							return A2(
 								_elm_lang$core$List$map,
-								function (_p6) {
+								function (_p7) {
 									return _terezka$elm_plot$Plot$simpleLabel(
-										A2(_myrho$elm_round$Round$roundNum, 3, _p6));
+										A2(_myrho$elm_round$Round$roundNum, 3, _p7));
 								},
 								{
 									ctor: '::',
@@ -14290,15 +14345,15 @@ var _user$project$Main$flashyLine = F3(
 	});
 var _user$project$Main$filterGroups = F2(
 	function (filters, data) {
-		var _p7 = filters;
-		if (_p7.ctor === '[]') {
+		var _p8 = filters;
+		if (_p8.ctor === '[]') {
 			return data;
 		} else {
 			return A2(
 				_elm_lang$core$List$filter,
-				function (_p8) {
-					var _p9 = _p8;
-					return A2(_elm_lang$core$List$member, _p9._1.run.groupName, filters);
+				function (_p9) {
+					var _p10 = _p9;
+					return A2(_elm_lang$core$List$member, _p10._1.run.groupName, filters);
 				},
 				data);
 		}
@@ -14348,13 +14403,13 @@ var _user$project$Main$basicSeries = F3(
 					horizontalAxis: A2(
 						_user$project$Main$rangeFrameAxis,
 						hovered,
-						function (_p10) {
+						function (_p11) {
 							return A2(
 								_myrho$elm_round$Round$roundNum,
 								3,
 								function (_) {
 									return _.x;
-								}(_p10));
+								}(_p11));
 						}),
 					margin: {top: 20, bottom: 20, left: 150, right: 40},
 					toDomainLowest: function (y) {
@@ -14363,52 +14418,6 @@ var _user$project$Main$basicSeries = F3(
 					junk: A2(_user$project$Main$legend, xLegend, yLegend)
 				}));
 	});
-var _user$project$Main$onChangeInt = function (msg) {
-	var action = A2(
-		_elm_lang$core$Json_Decode$map,
-		msg,
-		A2(
-			_elm_lang$core$Json_Decode$andThen,
-			function (txt) {
-				var _p11 = _elm_lang$core$String$toInt(txt);
-				if (_p11.ctor === 'Ok') {
-					return _elm_lang$core$Json_Decode$succeed(_p11._0);
-				} else {
-					return _elm_lang$core$Json_Decode$fail(_p11._0);
-				}
-			},
-			A2(
-				_elm_lang$core$Json_Decode$at,
-				{
-					ctor: '::',
-					_0: 'target',
-					_1: {
-						ctor: '::',
-						_0: 'value',
-						_1: {ctor: '[]'}
-					}
-				},
-				_elm_lang$core$Json_Decode$string)));
-	return A2(_elm_lang$html$Html_Events$on, 'change', action);
-};
-var _user$project$Main$onChange = function (msg) {
-	var action = A2(
-		_elm_lang$core$Json_Decode$map,
-		msg,
-		A2(
-			_elm_lang$core$Json_Decode$at,
-			{
-				ctor: '::',
-				_0: 'target',
-				_1: {
-					ctor: '::',
-					_0: 'value',
-					_1: {ctor: '[]'}
-				}
-			},
-			_elm_lang$core$Json_Decode$string));
-	return A2(_elm_lang$html$Html_Events$on, 'change', action);
-};
 var _user$project$Main$uniquePages = function (runs) {
 	return _elm_lang$core$List$sort(
 		_elm_community$list_extra$List_Extra$unique(
@@ -14461,15 +14470,6 @@ var _user$project$Main$renderGraphItem = F2(
 				_1: {ctor: '[]'}
 			});
 	});
-var _user$project$Main$onEnter = function (msg) {
-	var isEnter = function (code) {
-		return _elm_lang$core$Native_Utils.eq(code, 13) ? _elm_lang$core$Json_Decode$succeed(msg) : _elm_lang$core$Json_Decode$fail('not ENTER');
-	};
-	return A2(
-		_elm_lang$html$Html_Events$on,
-		'keydown',
-		A2(_elm_lang$core$Json_Decode$andThen, isEnter, _elm_lang$html$Html_Events$keyCode));
-};
 var _user$project$Main$extractTitles = function (runs) {
 	return _elm_lang$core$List$sort(
 		_elm_community$list_extra$List_Extra$unique(
@@ -15614,8 +15614,8 @@ var _user$project$Main$plotRuns = function (_p55) {
 		return _elm_lang$core$Native_Utils.crashCase(
 			'Main',
 			{
-				start: {line: 523, column: 5},
-				end: {line: 560, column: 63}
+				start: {line: 574, column: 5},
+				end: {line: 611, column: 63}
 			},
 			_p57)(
 			A2(_elm_lang$core$Basics_ops['++'], 'got invalid graph title: ', _p60));

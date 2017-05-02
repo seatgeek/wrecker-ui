@@ -18,6 +18,8 @@ import Tuple
 import List.Extra as EList
 
 
+{-| Bolilerplate: Wires the application together
+-}
 main : Program Never Model Msg
 main =
     Html.program
@@ -28,6 +30,14 @@ main =
         }
 
 
+
+-----------------------------------
+-- Types and definitions
+-----------------------------------
+
+
+{-| Represents the statistics as they come from the wrecker-ui server
+-}
 type alias Stats =
     { meanTime : Float
     , successHits : Int
@@ -42,6 +52,8 @@ type alias Stats =
     }
 
 
+{-| Contains the basic info for a Run done using wrecker
+-}
 type alias RunInfo =
     { created : Date.Date
     , concurrency : Int
@@ -51,6 +63,9 @@ type alias RunInfo =
     }
 
 
+{-| A run is a colleciton of pages that were tested, the load stats
+and also the basic information related to the run itself.
+-}
 type alias Run =
     { pages : List String
     , stats : Stats
@@ -58,10 +73,17 @@ type alias Run =
     }
 
 
+{-| Quick alias to avoid typing when representing a pair of (color, rundata)
+This pair is used when plotting the graph and the color is used to fill the circle
+for each point in the plot.
+-}
 type alias GraphData =
     ( String, Run )
 
 
+{-| The Model contains all the applicaiton state that is used to render the plot
+and the rest of the UI
+-}
 type alias Model =
     { runTitles : List String
     , searchField : String
@@ -73,6 +95,9 @@ type alias Model =
     }
 
 
+{-| Creates an empty model and also creates the initial command to execute when
+the applicaiton starts. That is, loading the list of runs from the server.
+-}
 init : ( Model, Cmd Msg )
 init =
     let
@@ -89,6 +114,9 @@ init =
         ( model, Http.send LoadRunTitles (getRuns "") )
 
 
+{-| Contains a list of all the possible actions that can be executed within the
+application. Each action contains a set of arguments associated with it.
+-}
 type Msg
     = SearchFieldUpdated String
     | SearchButtonClicked
@@ -102,31 +130,52 @@ type Msg
     | ChangeConcurrencyComparison Int
 
 
+{-| Creates a Title alias to easier identify a string it refers to a graph title
+-}
 type alias Title =
     String
 
 
+{-| Creates a Title alias to easier identify a string it refers to a graph
+legend in the Y axis
+-}
 type alias YLegend =
     String
 
 
+{-| Creates a Title alias to easier identify a string it refers to a graph
+legend in the X axis
+-}
 type alias XLegend =
     String
 
 
+{-| Creates a Title alias to easier identify a function as a data getter
+to be used for coordinates in the X axis.
+-}
 type alias XValueGetter =
     Run -> Float
 
 
+{-| Creates a Title alias to easier identify a function as a data getter
+to be used for coordinates in the Y axis.
+-}
 type alias YValueGetter =
     Run -> Float
 
 
+{-| Represents all the possible graph types this application is capable of
+rendering.
+-}
 type Graph
     = Scatter XLegend YLegend XValueGetter YValueGetter
     | Timeline YLegend YValueGetter
 
 
+{-| A (name, graph) values list with all the plots that can be selected. Many
+are variations of the same type of graph, only varying in the columns they are
+displaying
+-}
 validGraphs : List ( Title, Graph )
 validGraphs =
     let
@@ -144,6 +193,15 @@ validGraphs =
         ]
 
 
+
+-----------------------------------
+-- Update Logic
+-----------------------------------
+
+
+{-| Handles all the actions performed in the app and returns a pair with the mutated model
+and the next command to be executed to continue with the normal applicaiton flow.
+-}
 update : Msg -> Model -> ( Model, Cmd Msg )
 update msg model =
     case msg of
@@ -249,17 +307,25 @@ update msg model =
             ( { model | concurrencyComparison = Just concurrency }, Cmd.none )
 
 
+{-| Returns a Request object that can be used to load a list of RunInfo. This is
+used for displaying the list of runs that can be selected in the menu.
+-}
 getRuns : String -> Http.Request (List RunInfo)
 getRuns name =
     Http.get ("http://localhost:3000/runs?match=" ++ (Http.encodeUri name))
         (Decode.field "runs" (Decode.list decodeRunInfo))
 
 
+{-| Returns a Request object that can be used to load all the info related to a single Run
+-}
 getSingleRun : Int -> Http.Request Run
 getSingleRun id =
     Http.get ("http://localhost:3000/runs/" ++ toString id) decodeRun
 
 
+{-| Finds all runs with the same group name and assigns them a color based on this
+similarity. Returns the pair (color, run) in a list.
+-}
 assignColors : List Run -> List GraphData
 assignColors runs =
     runs
@@ -269,6 +335,9 @@ assignColors runs =
         |> List.concat
 
 
+{-| Returns a List of pairs where the first in the pair is the groupName
+and the secnd is the list of runs having the same groupName.
+-}
 buildGroups : List Run -> List ( String, List Run )
 buildGroups runs =
     let
@@ -289,6 +358,9 @@ buildGroups runs =
             |> Dict.toList
 
 
+{-| Returns the list of groups names that shoudl be selected by default when
+displaying the plot.
+-}
 defaultFilteredGroups : List Run -> List String
 defaultFilteredGroups runs =
     runs
@@ -296,6 +368,10 @@ defaultFilteredGroups runs =
         |> List.map Tuple.first
 
 
+{-| Returns the list of colors that can be assigned to the groups.
+Unfortunately I only found a reduced list of nice colors to use, so
+we cannot display more runs than colors in this list!
+-}
 allColors : List String
 allColors =
     [ "#ff9edf"
@@ -316,6 +392,8 @@ allColors =
     ]
 
 
+{-| Gets the unique run tiles from a list of Runs
+-}
 extractTitles : List RunInfo -> List String
 extractTitles runs =
     runs
@@ -324,6 +402,14 @@ extractTitles runs =
         |> List.sort
 
 
+
+-----------------------------------
+-- View Logic
+-----------------------------------
+
+
+{-| Takes a model state and renders all the HTML in the page out of it
+-}
 view : Model -> Html Msg
 view model =
     div []
@@ -335,6 +421,8 @@ view model =
         ]
 
 
+{-| Renders the left panel (where the search button and the list of runs is)
+-}
 leftPanel : String -> List String -> Html Msg
 leftPanel defaultTitle runTitles =
     header [ class "view-header" ]
@@ -360,18 +448,8 @@ runListItem title =
     li [ onClick (RunTitleClicked title) ] [ a [] [ text title ] ]
 
 
-onEnter : Msg -> Attribute Msg
-onEnter msg =
-    let
-        isEnter code =
-            if code == 13 then
-                Decode.succeed msg
-            else
-                Decode.fail "not ENTER"
-    in
-        on "keydown" (keyCode |> Decode.andThen isEnter)
-
-
+{-| Renders the right panel (where the plot and other info are)
+-}
 rightPanel : Model -> Html Msg
 rightPanel model =
     case model.runs of
@@ -385,6 +463,8 @@ rightPanel model =
                 ]
 
 
+{-| Renders the right column where the graph selector and lists of pages reside
+-}
 rightmostPanel : Model -> Html Msg
 rightmostPanel { graph, filteredGroups, runs, concurrencyComparison } =
     div []
@@ -479,35 +559,6 @@ uniquePages runs =
         |> List.concat
         |> EList.unique
         |> List.sort
-
-
-onChange : (String -> Msg) -> Attribute Msg
-onChange msg =
-    let
-        action =
-            Decode.at [ "target", "value" ] Decode.string
-                |> Decode.map msg
-    in
-        on "change" action
-
-
-onChangeInt : (Int -> Msg) -> Attribute Msg
-onChangeInt msg =
-    let
-        action =
-            Decode.at [ "target", "value" ] Decode.string
-                |> Decode.andThen
-                    (\txt ->
-                        case String.toInt txt of
-                            Ok int ->
-                                Decode.succeed int
-
-                            Err e ->
-                                Decode.fail e
-                    )
-                |> Decode.map msg
-    in
-        on "change" action
 
 
 graphDesc : Title -> Maybe Graph
@@ -728,9 +779,56 @@ hintedAxisAtMin hinted =
 
 
 
-----------------
---- JSON decode
-----------------
+---------------------------------------------
+--- View Utilities
+---------------------------------------------
+
+
+onEnter : Msg -> Attribute Msg
+onEnter msg =
+    let
+        isEnter code =
+            if code == 13 then
+                Decode.succeed msg
+            else
+                Decode.fail "not ENTER"
+    in
+        on "keydown" (keyCode |> Decode.andThen isEnter)
+
+
+onChange : (String -> Msg) -> Attribute Msg
+onChange msg =
+    let
+        action =
+            Decode.at [ "target", "value" ] Decode.string
+                |> Decode.map msg
+    in
+        on "change" action
+
+
+onChangeInt : (Int -> Msg) -> Attribute Msg
+onChangeInt msg =
+    let
+        action =
+            Decode.at [ "target", "value" ] Decode.string
+                |> Decode.andThen
+                    (\txt ->
+                        case String.toInt txt of
+                            Ok int ->
+                                Decode.succeed int
+
+                            Err e ->
+                                Decode.fail e
+                    )
+                |> Decode.map msg
+    in
+        on "change" action
+
+
+
+---------------------------------------------
+--- JSON Decoding
+---------------------------------------------
 
 
 decodeRun : Decode.Decoder Run
