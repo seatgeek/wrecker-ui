@@ -69,6 +69,7 @@ type alias Model =
     , graph : Title
     , hovered : Maybe Point
     , filteredGroups : List String
+    , concurrencyComparison : Maybe Int
     }
 
 
@@ -82,6 +83,7 @@ init =
             , graph = "Mean Time / Concurrency"
             , hovered = Nothing
             , filteredGroups = []
+            , concurrencyComparison = Nothing
             }
     in
         ( model, Http.send LoadRunTitles (getRuns "") )
@@ -97,6 +99,7 @@ type Msg
     | RunTitleClicked String
     | ChangeGraphType String
     | ToggleFilterGroup String
+    | ChangeConcurrencyComparison Int
 
 
 type alias Title =
@@ -198,20 +201,33 @@ update msg model =
 
         ChangeGraphType name ->
             let
-                defaultType =
-                    validGraphs
-                        |> List.head
-                        |> Maybe.map Tuple.first
-                        |> Maybe.withDefault ""
-
-                newType =
+                graphType =
                     validGraphs
                         |> List.filter (\( title, _ ) -> title == name)
-                        |> List.map Tuple.first
                         |> List.head
-                        |> Maybe.withDefault defaultType
+
+                ( newType, newConcurrency ) =
+                    case graphType of
+                        Nothing ->
+                            ( model.graph, model.concurrencyComparison )
+
+                        Just ( t, Timeline _ _ ) ->
+                            ( t, appropriateConcurrency model.runs )
+
+                        Just ( t, _ ) ->
+                            ( t, Nothing )
+
+                appropriateConcurrency runs =
+                    runs
+                        |> List.map (.run >> .concurrency)
+                        |> List.maximum
             in
-                ( { model | graph = newType }, Cmd.none )
+                ( { model
+                    | graph = newType
+                    , concurrencyComparison = newConcurrency
+                  }
+                , Cmd.none
+                )
 
         ToggleFilterGroup group ->
             let
@@ -228,6 +244,9 @@ update msg model =
                         filteredGroups
             in
                 ( { model | filteredGroups = newFilteredGroups }, Cmd.none )
+
+        ChangeConcurrencyComparison concurrency ->
+            ( { model | concurrencyComparison = Just concurrency }, Cmd.none )
 
 
 getRuns : String -> Http.Request (List RunInfo)
@@ -354,22 +373,23 @@ onEnter msg =
 
 
 rightPanel : Model -> Html Msg
-rightPanel { hovered, runs, graph, filteredGroups } =
-    case runs of
+rightPanel model =
+    case model.runs of
         [] ->
             text ""
 
         _ ->
             div [ class "view-plot view-plot__closed" ]
-                [ div [ class "view-plot--left" ] [ plotRuns graph filteredGroups hovered runs ]
-                , div [ class "view-plot--right" ] [ rightmostPanel graph filteredGroups runs ]
+                [ div [ class "view-plot--left" ] [ plotRuns model ]
+                , div [ class "view-plot--right" ] [ rightmostPanel model ]
                 ]
 
 
-rightmostPanel : Title -> List String -> List Run -> Html Msg
-rightmostPanel current filteredGroups runs =
+rightmostPanel : Model -> Html Msg
+rightmostPanel { graph, filteredGroups, runs, concurrencyComparison } =
     div []
-        [ select [ onChange ChangeGraphType ] (List.map (renderGraphItem current) validGraphs)
+        [ select [ onChange ChangeGraphType ] (List.map (renderGraphItem graph) validGraphs)
+        , renderConcurrencySelector concurrencyComparison runs
         , renderGroups filteredGroups runs
         , h4 [] [ text "Pages" ]
         , renderPageList runs
@@ -379,6 +399,26 @@ rightmostPanel current filteredGroups runs =
 renderGraphItem : Title -> ( Title, Graph ) -> Html Msg
 renderGraphItem current ( title, _ ) =
     option [ value title, selected (current == title) ] [ text title ]
+
+
+renderConcurrencySelector : Maybe Int -> List Run -> Html Msg
+renderConcurrencySelector current runs =
+    case current of
+        Nothing ->
+            text ""
+
+        Just concurrency ->
+            let
+                levels =
+                    runs
+                        |> List.map (.run >> .concurrency)
+                        |> EList.unique
+                        |> List.sort
+
+                buildOption level =
+                    option [ value (toString level), selected (concurrency == level) ] [ text (toString level) ]
+            in
+                select [ onChangeInt ChangeConcurrencyComparison ] (List.map buildOption levels)
 
 
 renderGroups : List String -> List Run -> Html Msg
@@ -451,6 +491,25 @@ onChange msg =
         on "change" action
 
 
+onChangeInt : (Int -> Msg) -> Attribute Msg
+onChangeInt msg =
+    let
+        action =
+            Decode.at [ "target", "value" ] Decode.string
+                |> Decode.andThen
+                    (\txt ->
+                        case String.toInt txt of
+                            Ok int ->
+                                Decode.succeed int
+
+                            Err e ->
+                                Decode.fail e
+                    )
+                |> Decode.map msg
+    in
+        on "change" action
+
+
 graphDesc : Title -> Maybe Graph
 graphDesc title =
     validGraphs
@@ -459,9 +518,9 @@ graphDesc title =
         |> List.head
 
 
-plotRuns : Title -> List String -> Maybe Point -> List Run -> Html Msg
-plotRuns graphTitle filteredGroups hovered runs =
-    case graphDesc graphTitle of
+plotRuns : Model -> Html Msg
+plotRuns { hovered, runs, graph, filteredGroups, concurrencyComparison } =
+    case graphDesc graph of
         Just (Scatter xLegend yLegend xGetter yGetter) ->
             basicSeries hovered
                 xLegend
@@ -471,9 +530,12 @@ plotRuns graphTitle filteredGroups hovered runs =
 
         Just (Timeline yLegend yGetter) ->
             let
+                level =
+                    Maybe.withDefault 0 concurrencyComparison
+
                 runData =
                     runs
-                        |> List.filter (\r -> r.run.concurrency == maxConcurrency)
+                        |> List.filter (\r -> r.run.concurrency == level)
 
                 dates =
                     runData
@@ -487,12 +549,6 @@ plotRuns graphTitle filteredGroups hovered runs =
                     dates
                         |> Dict.get (Date.toTime (d.run.created))
                         |> Maybe.withDefault 0
-
-                maxConcurrency =
-                    runs
-                        |> List.map (.run >> .concurrency)
-                        |> List.maximum
-                        |> Maybe.withDefault 0
             in
                 basicSeries hovered
                     ""
@@ -501,7 +557,7 @@ plotRuns graphTitle filteredGroups hovered runs =
                     (assignColors runData)
 
         Nothing ->
-            Debug.crash ("got invalid graph title: " ++ graphTitle)
+            Debug.crash ("got invalid graph title: " ++ graph)
 
 
 basicSeries :
