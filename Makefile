@@ -40,7 +40,7 @@ wrecker-ui-macos/wrecker-ui:
 	mkdir -p wrecker-ui-macos
 	stack install --local-bin-path wrecker-ui-macos
 
-release.json: wrecker-ui-linux/wrecker-ui package-macos
+release.json: package-linux package-macos
 	@echo "Creating draft release for $(VERSION)"
 	@curl $(AUTH) -XPOST $(API_HOST)/repos/seatgeek/wrecker-ui/releases -d '{ \
 		"tag_name": "$(VERSION)", \
@@ -55,13 +55,13 @@ publish: guard-VERSION guard-GITHUB_TOKEN release.json
 	@sleep 1
 	@echo "Uploading the Linux wrecker-ui"
 	@curl $(AUTH) -XPOST \
-		$(UPLOAD_HOST)/repos/seatgeek/wrecker/releases/$(RELEASE_ID)/assets?name=wrecker-ui-linux.zip \
+		$(UPLOAD_HOST)/repos/seatgeek/wrecker-ui/releases/$(RELEASE_ID)/assets?name=wrecker-ui-linux.zip \
 		-H "Accept: application/vnd.github.manifold-preview" \
 		-H 'Content-Type: application/octet-stream' \
 		--data-binary '@wrecker-ui-linux.zip' > /dev/null
 	@echo "Uploading the MacOS binary"
 	@curl $(AUTH) -XPOST \
-		$(UPLOAD_HOST)/repos/seatgeek/wrecker/releases/$(RELEASE_ID)/assets?name=wrecker-ui-macos.zip \
+		$(UPLOAD_HOST)/repos/seatgeek/wrecker-ui/releases/$(RELEASE_ID)/assets?name=wrecker-ui-macos.zip \
 		-H "Accept: application/vnd.github.manifold-preview" \
 		-H 'Content-Type: application/octet-stream' \
 		--data-binary '@wrecker-ui-macos.zip' > /dev/null
