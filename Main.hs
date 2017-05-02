@@ -1,7 +1,6 @@
 {-# LANGUAGE OverloadedStrings, RecordWildCards, NamedFieldPuns,
   DeriveGeneric #-}
 
-import Control.Exception (try, SomeException)
 import Data.Aeson hiding (json)
 import Data.Aeson.Types (Parser)
 import qualified Data.Map as Map
@@ -21,7 +20,7 @@ import Network.HTTP.Types
 import Network.Wai.Middleware.Cors (simpleCors)
 import Prelude hiding (id)
 import qualified System.Directory as Dir
-import System.Environment (getEnv)
+import System.Environment (lookupEnv)
 import Web.Scotty
 
 data WreckerRun = WreckerRun
@@ -98,11 +97,11 @@ main = do
 ----------------------------------
 findAssetsFolder :: IO String
 findAssetsFolder = do
-  f <- try (getEnv "WRECKER_ASSETS")
+  f <- lookupEnv "WRECKER_ASSETS"
   let folder =
-        case f :: Either SomeException String of
-          Left _ -> "assets/"
-          Right path -> path <> "/"
+        case f of
+          Nothing -> "assets/"
+          Just path -> path <> "/"
   exists <- Dir.doesFileExist (folder <> "app.js")
   if not exists
     then error
