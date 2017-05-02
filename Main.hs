@@ -96,7 +96,6 @@ main = do
 ----------------------------------
 -- App initialization
 ----------------------------------
-
 findAssetsFolder :: IO String
 findAssetsFolder = do
   f <- try (getEnv "WRECKER_ASSETS")
@@ -116,7 +115,7 @@ initDB base = do
   tables <- SQL.query_ conn "SELECT name FROM sqlite_master ORDER BY name" :: IO [[Text]]
   if length tables < 3
     then do
-      schema <- T.readFile (base <> "assets/schema.sql")
+      schema <- T.readFile (base <> "schema.sql")
       let statements = filter (/= Text.empty) (Text.splitOn ";\n" $ schema)
       mapM_ (SQL.execute_ conn . fromString . Text.unpack) statements
       return conn

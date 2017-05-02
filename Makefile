@@ -26,11 +26,11 @@ elm-build:
 
 package-linux: pull-linux-image elm-build wrecker-ui-linux/wrecker-ui
 	cp -a assets wrecker-ui-linux
-	zip wrecker-ui-linux.zip wrecker-ui-linux/*
+	zip -r wrecker-ui-linux.zip wrecker-ui-linux
 
 package-macos: elm-build wrecker-ui-macos/wrecker-ui
 	cp -a assets wrecker-ui-macos
-	zip wrecker-ui-macos.zip wrecker-ui-macos/*
+	zip -r wrecker-ui-macos.zip wrecker-ui-macos
 
 wrecker-ui-linux/wrecker-ui:
 	mkdir -p wrecker-ui-linux
