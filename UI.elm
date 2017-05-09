@@ -190,6 +190,7 @@ validGraphs =
         , ( "Aggregated Time / Concurrency", baseScatter (.stats >> .totalTime) )
         , ( "Variance / Concurrency", baseScatter (.stats >> .variance) )
         , ( "Mean Time Comparison", Timeline "Resp. Time (s)" (.stats >> .meanTime) )
+        , ( "Percentile 95 Comparison", Timeline "Resp. Time (s)" (.stats >> .quantile95) )
         , ( "Slowest Time Comparison", Timeline "Resp. Time (s)" (.stats >> .maxTime) )
         , ( "Variance Comparison", Timeline "Resp. Time (s)" (.stats >> .variance) )
         ]
