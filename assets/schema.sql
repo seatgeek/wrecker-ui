@@ -18,7 +18,8 @@ CREATE TABLE rollups (
 	hits_2xx INTEGER,
 	hits_4xx INTEGER,
 	hits_5xx INTEGER,
-	failed INTEGER
+	failed INTEGER,
+	quantile_95 REAL
 );
 
 CREATE TABLE pages (
@@ -34,5 +35,6 @@ CREATE TABLE pages (
 	hits_2xx INTEGER,
 	hits_4xx INTEGER,
 	hits_5xx INTEGER,
-	failed INTEGER
+	failed INTEGER,
+	quantile_95 REAL
 );

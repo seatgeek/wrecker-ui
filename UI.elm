@@ -49,6 +49,7 @@ type alias Stats =
     , failedHits : Int
     , variance : Float
     , hits : Int
+    , quantile95 : Float
     }
 
 
@@ -183,6 +184,7 @@ validGraphs =
             Scatter "Concurrency" "Resp. Time (s)" (.run >> .concurrency >> toFloat)
     in
         [ ( "Mean Time / Concurrency", baseScatter (.stats >> .meanTime) )
+        , ( "Percentile 95 / Concurrency", baseScatter (.stats >> .quantile95) )
         , ( "Fastest Time / Concurrency", baseScatter (.stats >> .minTime) )
         , ( "Slowest Time / Concurrency", baseScatter (.stats >> .maxTime) )
         , ( "Aggregated Time / Concurrency", baseScatter (.stats >> .totalTime) )
@@ -413,8 +415,7 @@ extractTitles runs =
 view : Model -> Html Msg
 view model =
     div []
-        [ node "link" [ rel "stylesheet", href "/assets/main.css" ] []
-        , div [ class "view" ]
+        [ div [ class "view" ]
             [ div [ class "view--left" ] [ leftPanel model.searchField model.runTitles ]
             , div [ class "view--right" ] [ rightPanel model ]
             ]
@@ -852,6 +853,7 @@ decodeStats =
         |> Pipeline.required "failedHits" Decode.int
         |> Pipeline.required "variance" Decode.float
         |> Pipeline.required "hits" Decode.int
+        |> Pipeline.required "quantile95" Decode.float
 
 
 decodeRunInfo : Decode.Decoder RunInfo

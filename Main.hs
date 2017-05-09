@@ -39,6 +39,7 @@ data Statistics = Statistics
   , userErrorHits :: Int
   , serverErrorHits :: Int
   , failedHits :: Int
+  , quantile95 :: Double
   } deriving (Eq, Show, Generic)
 
 newtype PageUrl =
@@ -190,15 +191,18 @@ getRun conn = do
   where
     errorTxt :: Text
     errorTxt = "No query result"
-    -- Transforms the SQL result into a JSON response
+    -- | Transforms the SQL result into a JSON response
+    --
     sendResult (run, stats, list) = do
       json $ object ["run" .= run, "stats" .= stats, "pages" .= list]
       status ok200
-    -- Responds with a JSON error
+    -- | Responds with a JSON error
+    --
     errorResponse err = do
       json $ object ["error" .= ("Invalid run id" :: Text), "reason" .= err]
       status badRequest400
-    -- Fetches the run stats in sqlite
+    -- | Fetches the run stats in sqlite
+    --
     fetchRunStats :: Int -> IO (Maybe (RunInfo, Statistics, [PageUrl]))
     fetchRunStats runId = do
       stats <- SQL.query conn runStatsQuery [runId]
@@ -242,18 +246,18 @@ insertRunQuery =
 insertRollupQuery :: SQL.Query
 insertRollupQuery =
   "INSERT INTO rollups (run_id, hits, max_time, mean_time, min_time, total_time, var_time, " <>
-  "hits_2xx, hits_4xx, hits_5xx, failed) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+  "hits_2xx, hits_4xx, hits_5xx, failed, quantile_95) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
 
 insertPageQuery :: SQL.Query
 insertPageQuery =
   "INSERT INTO pages (run_id, page_url, hits, max_time, mean_time, min_time, total_time, var_time, " <>
-  "hits_2xx, hits_4xx, hits_5xx, failed) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+  "hits_2xx, hits_4xx, hits_5xx, failed, quantile_95) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
 
 runStatsQuery :: SQL.Query
 runStatsQuery =
   "SELECT SUM(hits), MAX(max_time), AVG(mean_time), MIN(min_time)," <>
   "       SUM(total_time), AVG(var_time), SUM(hits_2xx), SUM(hits_4xx)," <>
-  "       SUM(hits_5xx), SUM(`failed`) " <>
+  "       SUM(hits_5xx), SUM(`failed`), AVG(quantile_95) " <>
   "FROM rollups " <>
   "WHERE run_id = ? " <>
   "GROUP BY run_id"
@@ -272,10 +276,10 @@ fetchPageStatsQuery :: SQL.Query
 fetchPageStatsQuery =
   "SELECT SUM(hits), MAX(max_time), AVG(mean_time), MIN(min_time)," <>
   "       SUM(total_time), AVG(var_time), SUM(hits_2xx), SUM(hits_4xx)," <>
-  "       SUM(hits_5xx), SUM(`failed`), " <>
+  "       SUM(hits_5xx), SUM(`failed`), AVG(quantile_95)," <>
   "       page_url " <>
   "FROM pages " <>
-  "WHERE run_id = ? AND page_== ?" <>
+  "WHERE run_id = ? AND page_url = ?" <>
   "GROUP BY page_url"
 
 ----------------------------------
@@ -294,6 +298,7 @@ instance ToRow SQLRollup where
     , toField userErrorHits
     , toField serverErrorHits
     , toField failedHits
+    , toField quantile95
     ]
 
 instance ToRow SQLPage where
@@ -310,6 +315,7 @@ instance ToRow SQLPage where
     , toField userErrorHits
     , toField serverErrorHits
     , toField failedHits
+    , toField quantile95
     ]
 
 instance FromRow PageUrl where
@@ -317,7 +323,8 @@ instance FromRow PageUrl where
 
 instance FromRow Statistics where
   fromRow =
-    Statistics <$> -- Behold the parser for 10 fields
+    Statistics <$> -- Behold the parser for 11 fields
+    SQL.field <*>
     SQL.field <*>
     SQL.field <*>
     SQL.field <*>
@@ -350,6 +357,7 @@ instance FromRow Page where
     userErrorHits <- SQL.field
     serverErrorHits <- SQL.field
     failedHits <- SQL.field
+    quantile95 <- SQL.field
     url <- SQL.field
     return $ Page {url = PageUrl url, stats = Statistics {..}}
 
@@ -366,6 +374,7 @@ instance FromJSON Statistics where
       hits <- rollup .: "count"
       variance <- rollup .: "variance"
       totalTime <- rollup .: "total"
+      quantile95 <- rollup .: "quantile95"
       successData <- o .: "2xx"
       successHits <- successData .: "count"
       userErrorData <- o .: "4xx"
