@@ -6,11 +6,11 @@ build-type:    Simple
 executable          wrecker-ui
     hs-source-dirs: .
     main-is:        Main.hs
+    other-modules:  Model
     ghc-options:    -Wall -threaded -O2 -rtsopts -with-rtsopts=-N
     extensions:     OverloadedStrings
     build-depends:  base   >= 4      && < 5
                   , scotty
-                  , sqlite-simple
                   , text
                   , time
                   , aeson
@@ -18,3 +18,13 @@ executable          wrecker-ui
                   , http-types
                   , wai-cors
                   , directory
+                  , persistent
+                  , persistent-template
+                  , persistent-sqlite
+                  , persistent-postgresql
+                  , esqueleto
+                  , monad-control
+                  , monad-logger
+                  , resourcet
+                  , transformers
+                  , resource-pool

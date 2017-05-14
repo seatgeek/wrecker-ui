@@ -1,20 +1,14 @@
-{-# LANGUAGE OverloadedStrings, RecordWildCards, NamedFieldPuns,
-  DeriveGeneric #-}
+{-# LANGUAGE RecordWildCards, NamedFieldPuns, DeriveGeneric #-}
 
+import Control.Monad.IO.Class (liftIO)
 import Data.Aeson hiding (json)
 import Data.Aeson.Types (Parser)
 import qualified Data.Map as Map
 import Data.Map (Map)
 import Data.Monoid ((<>))
-import Data.String (fromString)
 import Data.Text (Text)
-import qualified Data.Text as Text
-import Data.Text.IO as T (readFile)
 import qualified Data.Text.Internal.Lazy as LText
-import Data.Time.Clock (UTCTime)
-import qualified Database.SQLite.Simple as SQL
-import Database.SQLite.Simple (ToRow, FromRow)
-import Database.SQLite.Simple.ToField (ToField(..))
+import Data.Time.Clock (UTCTime, getCurrentTime)
 import GHC.Generics
 import Network.HTTP.Types
 import Network.Wai.Middleware.Cors (simpleCors)
@@ -23,39 +17,14 @@ import qualified System.Directory as Dir
 import System.Environment (lookupEnv)
 import Web.Scotty
 
+import qualified Database.Persist as P
+import qualified Database.Persist.Sql as Sql
+import qualified Model as M
+
 data WreckerRun = WreckerRun
-  { rollup :: Statistics
-  , pages :: [Page]
+  { rollup :: M.Rollup
+  , pages :: [M.Page]
   } deriving (Eq, Show)
-
-data Statistics = Statistics
-  { hits :: Int
-  , maxTime :: Double
-  , meanTime :: Double
-  , minTime :: Double
-  , totalTime :: Double
-  , variance :: Double
-  , successHits :: Int
-  , userErrorHits :: Int
-  , serverErrorHits :: Int
-  , failedHits :: Int
-  , quantile95 :: Double
-  } deriving (Eq, Show, Generic)
-
-newtype PageUrl =
-  PageUrl Text
-  deriving (Eq, Show, Generic)
-
-data Page = Page
-  { url :: PageUrl
-  , stats :: Statistics
-  } deriving (Eq, Show, Generic)
-
-newtype SQLRollup =
-  SQLRollup (Int, Statistics)
-
-newtype SQLPage =
-  SQLPage (Int, Page)
 
 data RunInfo = RunInfo
   { id :: Int
@@ -66,32 +35,12 @@ data RunInfo = RunInfo
   } deriving (Eq, Show, Generic)
 
 main :: IO ()
-main = do
-  folder <- findAssetsFolder
-  conn <- initDB folder
-  scotty 3000 $ -- Let's declare the routes and handlers
-   do
-    middleware simpleCors
-    -- ^ Useful when developing the elm app using a separate elm-live server
-    get "/" $ do
-      setHeader "Content-Type" "text/html; charset=utf-8"
-      file (folder <> "index.html")
-    get "/app.js" $ do
-      setHeader "Content-Type" "application/javascript"
-      file (folder <> "app.js")
-    get "/main.css" $ do
-      setHeader "Content-Type" "text/css"
-      file (folder <> "main.css")
-    -- ^ Serves the few static files we have
-    get "/runs" (listRuns conn)
-    --  ^ Gets the list of runs that have been stored. Optionally filtering by "match"
-    post "/runs" (createRun conn)
-    --  ^ Creates a new run and returns the id
-    post "/runs/:id" (storeResults conn)
-    --  ^ Gets the JSON blob from a wrecker run and stores them in the DB
-    get "/runs/:id" (getRun conn)
-    --  ^ Returns the basic info for the run, the list of pages and the general stats
-    get "/runs/:id/page" (getPageStats conn)
+main =
+  M.withDb $ \db ->
+    liftIO $ -- We're insde the DbMonad, so the results needs to be converted back to IO
+     do
+      M.runMigrations db
+      routes db
 
 ----------------------------------
 -- App initialization
@@ -109,32 +58,56 @@ findAssetsFolder = do
            "Could not find the assets folder. Set the WRECKER_ASSETS env variable with the full path to it"
     else return folder
 
-initDB :: String -> IO SQL.Connection
-initDB base = do
-  conn <- SQL.open "wrecker.db"
-  tables <- SQL.query_ conn "SELECT name FROM sqlite_master ORDER BY name" :: IO [[Text]]
-  if length tables < 3
-    then do
-      schema <- T.readFile (base <> "schema.sql")
-      let statements = filter (/= Text.empty) (Text.splitOn ";\n" $ schema)
-      mapM_ (SQL.execute_ conn . fromString . Text.unpack) statements
-      return conn
-    else return conn
+----------------------------------
+-- Routes and middleware
+----------------------------------
+routes :: M.Database -> IO ()
+routes db = do
+  folder <- findAssetsFolder
+  scotty 3000 $ -- Let's declare the routes and handlers
+   do
+    middleware simpleCors
+    -- ^ Useful when developing the elm app using a separate elm-live server
+    get "/" $ do
+      setHeader "Content-Type" "text/html; charset=utf-8"
+      file (folder <> "index.html")
+    get "/app.js" $ do
+      setHeader "Content-Type" "application/javascript"
+      file (folder <> "app.js")
+    get "/main.css" $ do
+      setHeader "Content-Type" "text/css"
+      file (folder <> "main.css")
+    -- ^ Serves the few static files we have
+    get "/runs" (listRuns db)
+    --  ^ Gets the list of runs that have been stored. Optionally filtering by "match"
+    post "/runs" (createRun db)
+    --  ^ Creates a new run and returns the id
+    post "/runs/:id" (storeResults db)
+    --  ^ Gets the JSON blob from a wrecker run and stores them in the DB
+    get "/runs/:id" (getRun db)
+    --  ^ Returns the basic info for the run, the list of pages and the general stats
+    get "/runs/:id/page" (getPageStats db)
 
 ----------------------------------
 -- Controllers
 ----------------------------------
-listRuns :: SQL.Connection -> ActionM ()
-listRuns conn = do
+listRuns :: M.Database -> ActionM ()
+listRuns db = do
   match <- optionalParam "match"
   result <- liftAndCatchIO (fetchRuns match)
   json $ object ["runs" .= result, "success" .= True]
   where
     fetchRuns :: Text -> IO [RunInfo]
-    fetchRuns match = SQL.query conn listRunsQuery ["%" <> match <> "%"]
+    fetchRuns match =
+      M.runDbAction db $ do
+        entities <- M.findRuns match
+        return $ fmap extractAndConvert entities
+    extractAndConvert e =
+      let key = fromIntegral . Sql.fromSqlKey . Sql.entityKey $ e
+      in convertToRunInfo key (Sql.entityVal e)
 
-createRun :: SQL.Connection -> ActionM ()
-createRun conn = do
+createRun :: M.Database -> ActionM ()
+createRun db = do
   conc <- readEither <$> param "concurrency"
   title <- param "title"
   group <- optionalParam "groupName"
@@ -143,19 +116,16 @@ createRun conn = do
       json $ object ["error" .= ("Invalid concurrency number" :: Text), "reason" .= err]
       status badRequest400
     Right concurrency -> do
-      newId <- liftAndCatchIO (doStoreRun concurrency title group)
+      now <- liftAndCatchIO getCurrentTime
+      newId <- liftAndCatchIO (doStoreRun $ M.Run title group concurrency now)
       json $ object ["success" .= True, "id" .= newId]
       status created201
   where
-    doStoreRun :: Int -> Text -> Text -> IO Int
-    doStoreRun concurrency title group =
-      SQL.withTransaction conn $ do
-        SQL.execute conn insertRunQuery (concurrency, title, group)
-        newId <- fromIntegral <$> SQL.lastInsertRowId conn
-        return newId
+    doStoreRun :: M.Run -> IO (M.Key M.Run)
+    doStoreRun run = M.runDbAction db (P.insert run)
 
-storeResults :: SQL.Connection -> ActionM ()
-storeResults conn = do
+storeResults :: M.Database -> ActionM ()
+storeResults db = do
   runId <- param "id"
   jsonPayload <- body
   let wreckerRun = eitherDecode jsonPayload :: Either String WreckerRun
@@ -172,16 +142,17 @@ storeResults conn = do
   where
     storeStats :: Int -> WreckerRun -> IO ()
     storeStats runId WreckerRun {rollup, pages} =
-      SQL.withTransaction conn $ do
-        SQL.execute conn insertRollupQuery (SQLRollup (runId, rollup))
+      M.runDbAction db $ do
+        let runKey = Sql.toSqlKey (fromIntegral runId)
+            fullRollup = rollup {M.rollupRunId = Just runKey}
+            fullPage page = page {M.pageRunId = Just runKey}
         --
-        -- After Inserting the rollup, we insert all the pages at once
-        -- using a single statement
-        let sqlPages = fmap (\p -> SQLPage (runId, p)) pages
-        SQL.executeMany conn insertPageQuery sqlPages -- Traverse all pages and insert them
+        -- We insert both the rollup and the pages in the same transaction
+        _ <- P.insert fullRollup
+        mapM_ (P.insert . fullPage) pages
 
-getRun :: SQL.Connection -> ActionM ()
-getRun conn = do
+getRun :: M.Database -> ActionM ()
+getRun db = do
   rId <- readEither <$> param "id"
   case rId of
     Right runId -> do
@@ -203,30 +174,35 @@ getRun conn = do
       status badRequest400
     -- | Fetches the run stats in sqlite
     --
-    fetchRunStats :: Int -> IO (Maybe (RunInfo, Statistics, [PageUrl]))
-    fetchRunStats runId = do
-      stats <- SQL.query conn runStatsQuery [runId]
-      list <- SQL.query conn pagesListQuery [runId]
-      run <- SQL.query conn fetchRunQuery [runId]
-      return $
-        case stats of
-          [] -> Nothing
-          statistics:_ -> Just (head run, statistics, list)
+    fetchRunStats :: Int -> IO (Maybe (RunInfo, M.Rollup, [Text]))
+    fetchRunStats runId =
+      M.runDbAction db $ do
+        let runKey = Sql.toSqlKey . fromIntegral $ runId
+        stats <- M.findRunStats runKey
+        list <- M.findPagesList runKey
+        run <- P.get runKey
+        return $
+          case (run, stats) of
+            (Nothing, _) -> Nothing
+            (_, []) -> Nothing
+            (Just r, statistics:_) -> Just (convertToRunInfo runId r, statistics, list)
 
-getPageStats :: SQL.Connection -> ActionM ()
-getPageStats conn = do
+getPageStats :: M.Database -> ActionM ()
+getPageStats db = do
   runId <- param "id"
   pageName <- param "name"
   page <- liftAndCatchIO (fetchPageStats runId pageName)
   json page
   where
-    fetchPageStats :: Int -> Text -> IO (Maybe Page)
-    fetchPageStats runId pageName = do
-      result <- SQL.query conn fetchPageStatsQuery (runId, pageName)
-      return $
-        case result of
-          [] -> Nothing
-          pageStats:_ -> Just pageStats
+    fetchPageStats :: Int -> Text -> IO (Maybe M.Page)
+    fetchPageStats runId pageName =
+      M.runDbAction db $ do
+        let runKey = Sql.toSqlKey . fromIntegral $ runId
+        result <- M.findPageStats runKey pageName
+        return $
+          case result of
+            [] -> Nothing
+            pageStats:_ -> Just pageStats
 
 ----------------------------------
 -- Utilities
@@ -236,175 +212,30 @@ optionalParam
   => LText.Text -> ActionM a
 optionalParam name = param name `rescue` (\_ -> return mempty)
 
-----------------------------------
--- SQL Queries
-----------------------------------
-insertRunQuery :: SQL.Query
-insertRunQuery =
-  "INSERT INTO runs (concurrency, test_match, group_name, created) VALUES (?, ?, ?, DATETIME('now'))"
-
-insertRollupQuery :: SQL.Query
-insertRollupQuery =
-  "INSERT INTO rollups (run_id, hits, max_time, mean_time, min_time, total_time, var_time, " <>
-  "hits_2xx, hits_4xx, hits_5xx, failed, quantile_95) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
-
-insertPageQuery :: SQL.Query
-insertPageQuery =
-  "INSERT INTO pages (run_id, page_url, hits, max_time, mean_time, min_time, total_time, var_time, " <>
-  "hits_2xx, hits_4xx, hits_5xx, failed, quantile_95) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
-
-runStatsQuery :: SQL.Query
-runStatsQuery =
-  "SELECT SUM(hits), MAX(max_time), AVG(mean_time), MIN(min_time)," <>
-  "       SUM(total_time), AVG(var_time), SUM(hits_2xx), SUM(hits_4xx)," <>
-  "       SUM(hits_5xx), SUM(`failed`), AVG(quantile_95) " <>
-  "FROM rollups " <>
-  "WHERE run_id = ? " <>
-  "GROUP BY run_id"
-
-pagesListQuery :: SQL.Query
-pagesListQuery = "SELECT DISTINCT page_url FROM pages where run_id = ?"
-
-listRunsQuery :: SQL.Query
-listRunsQuery =
-  "SELECT id, test_match, group_name, concurrency, created FROM runs WHERE test_match LIKE ? ORDER BY created DESC"
-
-fetchRunQuery :: SQL.Query
-fetchRunQuery = "SELECT id, test_match, group_name, concurrency, created FROM runs WHERE id = ?"
-
-fetchPageStatsQuery :: SQL.Query
-fetchPageStatsQuery =
-  "SELECT SUM(hits), MAX(max_time), AVG(mean_time), MIN(min_time)," <>
-  "       SUM(total_time), AVG(var_time), SUM(hits_2xx), SUM(hits_4xx)," <>
-  "       SUM(hits_5xx), SUM(`failed`), AVG(quantile_95)," <>
-  "       page_url " <>
-  "FROM pages " <>
-  "WHERE run_id = ? AND page_url = ?" <>
-  "GROUP BY page_url"
-
-----------------------------------
--- SQL Conversions
-----------------------------------
-instance ToRow SQLRollup where
-  toRow (SQLRollup (runId, Statistics {..})) =
-    [ toField runId
-    , toField hits
-    , toField maxTime
-    , toField meanTime
-    , toField minTime
-    , toField totalTime
-    , toField variance
-    , toField successHits
-    , toField userErrorHits
-    , toField serverErrorHits
-    , toField failedHits
-    , toField quantile95
-    ]
-
-instance ToRow SQLPage where
-  toRow (SQLPage (runId, Page {url = PageUrl u, stats = Statistics {..}})) =
-    [ toField runId
-    , toField u
-    , toField hits
-    , toField maxTime
-    , toField meanTime
-    , toField minTime
-    , toField totalTime
-    , toField variance
-    , toField successHits
-    , toField userErrorHits
-    , toField serverErrorHits
-    , toField failedHits
-    , toField quantile95
-    ]
-
-instance FromRow PageUrl where
-  fromRow = PageUrl <$> SQL.field
-
-instance FromRow Statistics where
-  fromRow =
-    Statistics <$> -- Behold the parser for 11 fields
-    SQL.field <*>
-    SQL.field <*>
-    SQL.field <*>
-    SQL.field <*>
-    SQL.field <*>
-    SQL.field <*>
-    SQL.field <*>
-    SQL.field <*>
-    SQL.field <*>
-    SQL.field <*>
-    SQL.field -- Type inference will map the 'field' funciton to the right type
-
-instance FromRow RunInfo where
-  fromRow = do
-    id <- SQL.field
-    match <- SQL.field
-    groupName <- SQL.field
-    concurrency <- SQL.field
-    created <- SQL.field
-    return RunInfo {..}
-
-instance FromRow Page where
-  fromRow = do
-    hits <- SQL.field
-    maxTime <- SQL.field
-    meanTime <- SQL.field
-    minTime <- SQL.field
-    totalTime <- SQL.field
-    variance <- SQL.field
-    successHits <- SQL.field
-    userErrorHits <- SQL.field
-    serverErrorHits <- SQL.field
-    failedHits <- SQL.field
-    quantile95 <- SQL.field
-    url <- SQL.field
-    return $ Page {url = PageUrl url, stats = Statistics {..}}
+convertToRunInfo :: Int -> M.Run -> RunInfo
+convertToRunInfo key M.Run {..} =
+  RunInfo -- Just pass the args
+    key
+    runMatch
+    runGroupName
+    runConcurrency
+    runCreated
 
 ----------------------------------
 -- JSON Conversions
 ----------------------------------
-instance FromJSON Statistics where
-  parseJSON =
-    withObject "Statistics" $ \o -> do
-      rollup <- o .: "rollup"
-      maxTime <- rollup .: "max"
-      meanTime <- rollup .: "mean"
-      minTime <- rollup .: "min"
-      hits <- rollup .: "count"
-      variance <- rollup .: "variance"
-      totalTime <- rollup .: "total"
-      quantile95 <- rollup .: "quantile95"
-      successData <- o .: "2xx"
-      successHits <- successData .: "count"
-      userErrorData <- o .: "4xx"
-      userErrorHits <- userErrorData .: "count"
-      serverErrorData <- o .: "5xx"
-      serverErrorHits <- serverErrorData .: "count"
-      failureData <- o .: "failed"
-      failedHits <- failureData .: "count"
-      return Statistics {..}
-
 instance FromJSON WreckerRun where
   parseJSON =
     withObject "WreckerRun" $ \o -> do
       rollup <- o .: "runs"
-      allPages <- o .: "per-request" :: Parser (Map Text Statistics)
+      allPages <- o .: "per-request" :: Parser (Map Text M.Page)
       -- Now we convert the pages dictionary into a list of 'Page'
       -- by traversing all the structure with a accumulator function
       let pages =
             Map.foldlWithKey'
-              (\list u stats ->
-                 let url = PageUrl u
-                 in Page {..} : list)
+              (\list url page -> page {M.pageUrl = Just url} : list)
               [] -- The initial accumulator value
               allPages
       return WreckerRun {..}
 
-instance ToJSON PageUrl
-
-instance ToJSON Statistics
-
 instance ToJSON RunInfo
-
-instance ToJSON Page
