@@ -28,3 +28,5 @@ executable          wrecker-ui
                   , resourcet
                   , transformers
                   , resource-pool
+                  , postgresql-simple-url
+                  , postgresql-simple

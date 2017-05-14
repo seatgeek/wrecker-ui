@@ -19,17 +19,22 @@ import Control.Monad.Logger (LoggingT(..), runStderrLoggingT)
 import Control.Monad.Trans.Control (MonadBaseControl(..))
 import Control.Monad.Trans.Reader (ReaderT)
 import qualified Control.Monad.Trans.Resource as R
-import Data.Aeson
-import Data.Aeson.Types (Options(..), camelTo2)
+import Data.Aeson hiding (Value)
+import Data.Aeson.Types (Options(..))
+import Data.Char (toLower)
 import Data.Monoid ((<>))
 import Data.Pool (Pool)
+import Data.Ratio (numerator)
 import Data.Text (Text)
 import Data.Time.Clock (UTCTime)
 import Database.Esqueleto
 import Database.Persist (Key)
+import Database.Persist.Postgresql (withPostgresqlPool)
 import qualified Database.Persist.Sql as Sql
 import Database.Persist.Sqlite (withSqlitePool)
 import Database.Persist.TH
+import Database.PostgreSQL.Simple.Internal
+       (ConnectInfo, postgreSQLConnectionString)
 import GHC.Generics hiding (from)
 
 -------------------------------------
@@ -86,13 +91,22 @@ type TransactionMonad m a = ReaderT SqlBackend (R.ResourceT m) a
 
 type Database = Pool SqlBackend
 
+data DbBackend
+  = Postgresql ConnectInfo
+  | Sqlite
+
 -------------------------------------
 -- Functions for working with the DB
 -------------------------------------
 withDb
   :: DbMonad m
-  => (Database -> LoggingT m a) -> m a
-withDb = runStderrLoggingT . withSqlitePool "test.db" 10
+  => DbBackend -> (Database -> LoggingT m a) -> m a
+withDb dbType = runStderrLoggingT . withPool 10
+  where
+    withPool size =
+      case dbType of
+        Sqlite -> withSqlitePool "wrecker.db" size
+        Postgresql info -> withPostgresqlPool (postgreSQLConnectionString info) size
 
 runDbAction
   :: DbMonad m
@@ -107,7 +121,6 @@ runMigrations pool = runDbAction pool (Sql.runMigration migrateAll)
 -------------------------------------
 -- Finder queries
 -------------------------------------
-
 findRuns
   :: MonadIO m
   => Text -> SqlReadT m [Entity Run]
@@ -140,7 +153,7 @@ findRunStats runId = do
       where_ (rollup ^. RollupRunId ==. just (val runId))
       groupBy (rollup ^. RollupId)
       return
-        ( coalesceDefault [avg_ (rollup ^. RollupHits)] (val 0)
+        ( coalesceDefault [sum_ (rollup ^. RollupHits)] (val 0)
         , coalesceDefault [max_ (rollup ^. RollupMaxTime)] (val 0)
         , coalesceDefault [avg_ (rollup ^. RollupMeanTime)] (val 0)
         , coalesceDefault [min_ (rollup ^. RollupMinTime)] (val 0)
@@ -166,7 +179,7 @@ findPageStats runId url = do
       where_ (page ^. PageUrl ==. just (val url))
       groupBy (page ^. PageRunId, page ^. PageUrl)
       return
-        ( coalesceDefault [avg_ (page ^. PageHits)] (val 0)
+        ( coalesceDefault [sum_ (page ^. PageHits)] (val 0)
         , coalesceDefault [max_ (page ^. PageMaxTime)] (val 0)
         , coalesceDefault [avg_ (page ^. PageMeanTime)] (val 0)
         , coalesceDefault [min_ (page ^. PageMinTime)] (val 0)
@@ -182,22 +195,40 @@ findPageStats runId url = do
     buildPage fields = set11Fields (Page Nothing (Just url)) fields
 
 set11Fields func (Value a, Value b, Value c, Value d, Value e, Value f, Value g, Value h, Value i, Value j, Value k) =
-  func a b c d e f g h i j k
+  func -- Some fields need casting
+    (castInt a)
+    b
+    c
+    d
+    e
+    f
+    (castInt g)
+    (castInt h)
+    (castInt i)
+    (castInt j)
+    k
+  where
+    castInt :: Rational -> Int
+    castInt = fromIntegral . numerator
 
 -------------------------------------
 -- JSON conversions
 -------------------------------------
 instance ToJSON Run where
-  toJSON = genericToJSON (defaultOptions {fieldLabelModifier = camelTo2 '_' . drop 3})
+  toJSON = genericToJSON (defaultOptions {fieldLabelModifier = lcFirst . drop 3})
 
 instance FromJSON Run where
-  parseJSON = genericParseJSON (defaultOptions {fieldLabelModifier = camelTo2 '_' . drop 3})
+  parseJSON = genericParseJSON (defaultOptions {fieldLabelModifier = lcFirst . drop 3})
 
 instance ToJSON Rollup where
-  toJSON = genericToJSON (defaultOptions {fieldLabelModifier = camelTo2 '_' . drop 6})
+  toJSON = genericToJSON (defaultOptions {fieldLabelModifier = lcFirst . drop 6})
 
 instance ToJSON Page where
-  toJSON = genericToJSON (defaultOptions {fieldLabelModifier = camelTo2 '_' . drop 4})
+  toJSON = genericToJSON (defaultOptions {fieldLabelModifier = lcFirst . drop 4})
+
+lcFirst :: String -> String
+lcFirst "" = ""
+lcFirst (f:rest) = toLower f : rest
 
 instance FromJSON Rollup where
   parseJSON =

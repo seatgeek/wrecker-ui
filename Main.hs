@@ -8,8 +8,8 @@ import Data.Map (Map)
 import Data.Monoid ((<>))
 import Data.Text (Text)
 import qualified Data.Text.Internal.Lazy as LText
-import Data.Time.Clock (UTCTime, getCurrentTime)
-import GHC.Generics
+import Data.Time.Clock (getCurrentTime)
+import Database.PostgreSQL.Simple.URL (parseDatabaseUrl)
 import Network.HTTP.Types
 import Network.Wai.Middleware.Cors (simpleCors)
 import Prelude hiding (id)
@@ -26,17 +26,14 @@ data WreckerRun = WreckerRun
   , pages :: [M.Page]
   } deriving (Eq, Show)
 
-data RunInfo = RunInfo
-  { id :: Int
-  , match :: Text
-  , groupName :: Text
-  , concurrency :: Int
-  , created :: UTCTime
-  } deriving (Eq, Show, Generic)
+data RunInfo =
+  RunInfo Int
+          M.Run
 
 main :: IO ()
-main =
-  M.withDb $ \db ->
+main = do
+  dbType <- selectDatabaseType
+  M.withDb dbType $ \db ->
     liftIO $ -- We're insde the DbMonad, so the results needs to be converted back to IO
      do
       M.runMigrations db
@@ -57,6 +54,20 @@ findAssetsFolder = do
     then error
            "Could not find the assets folder. Set the WRECKER_ASSETS env variable with the full path to it"
     else return folder
+
+selectDatabaseType :: IO M.DbBackend
+selectDatabaseType = do
+  dbInfo <- lookupEnv "WRECKER_DB"
+  case dbInfo of
+    Nothing -> do
+      putStrLn "Using SQLite"
+      return M.Sqlite
+    Just info ->
+      case parseDatabaseUrl info of
+        Nothing -> error "Invalid WRECKER_DB url"
+        Just connDetails -> do
+          putStrLn "Using PostgreSQL"
+          return (M.Postgresql connDetails)
 
 ----------------------------------
 -- Routes and middleware
@@ -104,7 +115,7 @@ listRuns db = do
         return $ fmap extractAndConvert entities
     extractAndConvert e =
       let key = fromIntegral . Sql.fromSqlKey . Sql.entityKey $ e
-      in convertToRunInfo key (Sql.entityVal e)
+      in RunInfo key (Sql.entityVal e)
 
 createRun :: M.Database -> ActionM ()
 createRun db = do
@@ -117,7 +128,8 @@ createRun db = do
       status badRequest400
     Right concurrency -> do
       now <- liftAndCatchIO getCurrentTime
-      newId <- liftAndCatchIO (doStoreRun $ M.Run title group concurrency now)
+      let run = M.Run title group concurrency now
+      newId <- liftAndCatchIO (doStoreRun run)
       json $ object ["success" .= True, "id" .= newId]
       status created201
   where
@@ -143,7 +155,7 @@ storeResults db = do
     storeStats :: Int -> WreckerRun -> IO ()
     storeStats runId WreckerRun {rollup, pages} =
       M.runDbAction db $ do
-        let runKey = Sql.toSqlKey (fromIntegral runId)
+        let runKey = toSqlKey runId
             fullRollup = rollup {M.rollupRunId = Just runKey}
             fullPage page = page {M.pageRunId = Just runKey}
         --
@@ -177,7 +189,7 @@ getRun db = do
     fetchRunStats :: Int -> IO (Maybe (RunInfo, M.Rollup, [Text]))
     fetchRunStats runId =
       M.runDbAction db $ do
-        let runKey = Sql.toSqlKey . fromIntegral $ runId
+        let runKey = toSqlKey runId
         stats <- M.findRunStats runKey
         list <- M.findPagesList runKey
         run <- P.get runKey
@@ -185,7 +197,7 @@ getRun db = do
           case (run, stats) of
             (Nothing, _) -> Nothing
             (_, []) -> Nothing
-            (Just r, statistics:_) -> Just (convertToRunInfo runId r, statistics, list)
+            (Just r, statistics:_) -> Just (RunInfo runId r, statistics, list)
 
 getPageStats :: M.Database -> ActionM ()
 getPageStats db = do
@@ -197,7 +209,7 @@ getPageStats db = do
     fetchPageStats :: Int -> Text -> IO (Maybe M.Page)
     fetchPageStats runId pageName =
       M.runDbAction db $ do
-        let runKey = Sql.toSqlKey . fromIntegral $ runId
+        let runKey = toSqlKey runId
         result <- M.findPageStats runKey pageName
         return $
           case result of
@@ -212,14 +224,8 @@ optionalParam
   => LText.Text -> ActionM a
 optionalParam name = param name `rescue` (\_ -> return mempty)
 
-convertToRunInfo :: Int -> M.Run -> RunInfo
-convertToRunInfo key M.Run {..} =
-  RunInfo -- Just pass the args
-    key
-    runMatch
-    runGroupName
-    runConcurrency
-    runCreated
+toSqlKey :: Int -> M.Key M.Run
+toSqlKey = Sql.toSqlKey . fromIntegral
 
 ----------------------------------
 -- JSON Conversions
@@ -238,4 +244,8 @@ instance FromJSON WreckerRun where
               allPages
       return WreckerRun {..}
 
-instance ToJSON RunInfo
+instance ToJSON RunInfo where
+  toJSON (RunInfo k run) =
+    let (Object encoded) = toJSON run -- first encode the run
+        (Object eKey) = object ["id" .= k] -- convert the key to json
+    in Object (encoded <> eKey) -- Add both parts together as an object
