@@ -111,12 +111,12 @@ withDb dbType = runStderrLoggingT . withPool 10
 runDbAction
   :: DbMonad m
   => Database -> TransactionMonad m a -> m a
-runDbAction pool = R.runResourceT . flip Sql.runSqlPool pool
+runDbAction db = R.runResourceT . flip Sql.runSqlPool db
 
 runMigrations
   :: DbMonad m
   => Database -> m ()
-runMigrations pool = runDbAction pool (Sql.runMigration migrateAll)
+runMigrations db = runDbAction db (Sql.runMigration migrateAll)
 
 -------------------------------------
 -- Finder queries

@@ -19,24 +19,26 @@ import Web.Scotty
 
 import qualified Database.Persist as P
 import qualified Database.Persist.Sql as Sql
-import qualified Model as M
+import Model
+       (Page(..), Run(..), Rollup(..), DbBackend(..), Database, Key,
+        withDb, runDbAction, runMigrations, findRuns, findRunStats, findPagesList, findPageStats)
 
 data WreckerRun = WreckerRun
-  { rollup :: M.Rollup
-  , pages :: [M.Page]
+  { rollup :: Rollup
+  , pages :: [Page]
   } deriving (Eq, Show)
 
 data RunInfo =
   RunInfo Int
-          M.Run
+          Run
 
 main :: IO ()
 main = do
   dbType <- selectDatabaseType
-  M.withDb dbType $ \db ->
+  withDb dbType $ \db ->
     liftIO $ -- We're insde the DbMonad, so the results needs to be converted back to IO
      do
-      M.runMigrations db
+      runMigrations db
       routes db
 
 ----------------------------------
@@ -55,24 +57,24 @@ findAssetsFolder = do
            "Could not find the assets folder. Set the WRECKER_ASSETS env variable with the full path to it"
     else return folder
 
-selectDatabaseType :: IO M.DbBackend
+selectDatabaseType :: IO DbBackend
 selectDatabaseType = do
   dbInfo <- lookupEnv "WRECKER_DB"
   case dbInfo of
     Nothing -> do
       putStrLn "Using SQLite"
-      return M.Sqlite
+      return Sqlite
     Just info ->
       case parseDatabaseUrl info of
         Nothing -> error "Invalid WRECKER_DB url"
         Just connDetails -> do
           putStrLn "Using PostgreSQL"
-          return (M.Postgresql connDetails)
+          return (Postgresql connDetails)
 
 ----------------------------------
 -- Routes and middleware
 ----------------------------------
-routes :: M.Database -> IO ()
+routes :: Database -> IO ()
 routes db = do
   folder <- findAssetsFolder
   scotty 3000 $ -- Let's declare the routes and handlers
@@ -102,7 +104,7 @@ routes db = do
 ----------------------------------
 -- Controllers
 ----------------------------------
-listRuns :: M.Database -> ActionM ()
+listRuns :: Database -> ActionM ()
 listRuns db = do
   match <- optionalParam "match"
   result <- liftAndCatchIO (fetchRuns match)
@@ -110,14 +112,14 @@ listRuns db = do
   where
     fetchRuns :: Text -> IO [RunInfo]
     fetchRuns match =
-      M.runDbAction db $ do
-        entities <- M.findRuns match
+      runDbAction db $ do
+        entities <- findRuns match
         return $ fmap extractAndConvert entities
     extractAndConvert e =
       let key = fromIntegral . Sql.fromSqlKey . Sql.entityKey $ e
       in RunInfo key (Sql.entityVal e)
 
-createRun :: M.Database -> ActionM ()
+createRun :: Database -> ActionM ()
 createRun db = do
   conc <- readEither <$> param "concurrency"
   title <- param "title"
@@ -128,15 +130,15 @@ createRun db = do
       status badRequest400
     Right concurrency -> do
       now <- liftAndCatchIO getCurrentTime
-      let run = M.Run title group concurrency now
+      let run = Run title group concurrency now
       newId <- liftAndCatchIO (doStoreRun run)
       json $ object ["success" .= True, "id" .= newId]
       status created201
   where
-    doStoreRun :: M.Run -> IO (M.Key M.Run)
-    doStoreRun run = M.runDbAction db (P.insert run)
+    doStoreRun :: Run -> IO (Key Run)
+    doStoreRun run = runDbAction db (P.insert run)
 
-storeResults :: M.Database -> ActionM ()
+storeResults :: Database -> ActionM ()
 storeResults db = do
   runId <- param "id"
   jsonPayload <- body
@@ -154,16 +156,16 @@ storeResults db = do
   where
     storeStats :: Int -> WreckerRun -> IO ()
     storeStats runId WreckerRun {rollup, pages} =
-      M.runDbAction db $ do
+      runDbAction db $ do
         let runKey = toSqlKey runId
-            fullRollup = rollup {M.rollupRunId = Just runKey}
-            fullPage page = page {M.pageRunId = Just runKey}
+            fullRollup = rollup {rollupRunId = Just runKey}
+            fullPage page = page {pageRunId = Just runKey}
         --
         -- We insert both the rollup and the pages in the same transaction
         _ <- P.insert fullRollup
         mapM_ (P.insert . fullPage) pages
 
-getRun :: M.Database -> ActionM ()
+getRun :: Database -> ActionM ()
 getRun db = do
   rId <- readEither <$> param "id"
   case rId of
@@ -186,12 +188,12 @@ getRun db = do
       status badRequest400
     -- | Fetches the run stats in sqlite
     --
-    fetchRunStats :: Int -> IO (Maybe (RunInfo, M.Rollup, [Text]))
+    fetchRunStats :: Int -> IO (Maybe (RunInfo, Rollup, [Text]))
     fetchRunStats runId =
-      M.runDbAction db $ do
+      runDbAction db $ do
         let runKey = toSqlKey runId
-        stats <- M.findRunStats runKey
-        list <- M.findPagesList runKey
+        stats <- findRunStats runKey
+        list <- findPagesList runKey
         run <- P.get runKey
         return $
           case (run, stats) of
@@ -199,18 +201,18 @@ getRun db = do
             (_, []) -> Nothing
             (Just r, statistics:_) -> Just (RunInfo runId r, statistics, list)
 
-getPageStats :: M.Database -> ActionM ()
+getPageStats :: Database -> ActionM ()
 getPageStats db = do
   runId <- param "id"
   pageName <- param "name"
   page <- liftAndCatchIO (fetchPageStats runId pageName)
   json page
   where
-    fetchPageStats :: Int -> Text -> IO (Maybe M.Page)
+    fetchPageStats :: Int -> Text -> IO (Maybe Page)
     fetchPageStats runId pageName =
-      M.runDbAction db $ do
+      runDbAction db $ do
         let runKey = toSqlKey runId
-        result <- M.findPageStats runKey pageName
+        result <- findPageStats runKey pageName
         return $
           case result of
             [] -> Nothing
@@ -224,7 +226,7 @@ optionalParam
   => LText.Text -> ActionM a
 optionalParam name = param name `rescue` (\_ -> return mempty)
 
-toSqlKey :: Int -> M.Key M.Run
+toSqlKey :: Int -> Key Run
 toSqlKey = Sql.toSqlKey . fromIntegral
 
 ----------------------------------
@@ -234,12 +236,12 @@ instance FromJSON WreckerRun where
   parseJSON =
     withObject "WreckerRun" $ \o -> do
       rollup <- o .: "runs"
-      allPages <- o .: "per-request" :: Parser (Map Text M.Page)
+      allPages <- o .: "per-request" :: Parser (Map Text Page)
       -- Now we convert the pages dictionary into a list of 'Page'
       -- by traversing all the structure with a accumulator function
       let pages =
             Map.foldlWithKey'
-              (\list url page -> page {M.pageUrl = Just url} : list)
+              (\list url page -> page {pageUrl = Just url} : list)
               [] -- The initial accumulator value
               allPages
       return WreckerRun {..}
