@@ -16,6 +16,7 @@ import Round exposing (roundNum)
 import Dict exposing (Dict)
 import Tuple
 import List.Extra as EList
+import String.Extra exposing (leftOf, fromInt)
 
 
 {-| Bolilerplate: Wires the application together
@@ -74,12 +75,44 @@ type alias Run =
     }
 
 
+type RunStatus
+    = Running
+    | Done
+    | Scheduled
+    | NotYet
+
+
+type TestList
+    = TestList (Dict String RunStatus)
+
+
 {-| Quick alias to avoid typing when representing a pair of (color, rundata)
 This pair is used when plotting the graph and the color is used to fill the circle
 for each point in the plot.
 -}
 type alias GraphData =
     ( String, Run )
+
+
+type Screen
+    = PlotScreen
+    | ScheduleRunScreen
+
+
+type alias SchedulerOptions =
+    { testTitle : String
+    , annotationTitle : String
+    , concurrencyStart : Int
+    , concurrencyEnd : Int
+    , stepSize : Int
+    }
+
+
+type SchedulerField
+    = AnnotationTitle
+    | ConcurrencyStart
+    | ConcurrencyEnd
+    | StepSize
 
 
 {-| The Model contains all the applicaiton state that is used to render the plot
@@ -93,6 +126,9 @@ type alias Model =
     , hovered : Maybe Point
     , filteredGroups : List String
     , concurrencyComparison : Maybe Int
+    , testList : TestList
+    , currentScreen : Screen
+    , schedulerOptions : Maybe SchedulerOptions
     }
 
 
@@ -110,9 +146,12 @@ init =
             , hovered = Nothing
             , filteredGroups = []
             , concurrencyComparison = Nothing
+            , testList = TestList Dict.empty
+            , currentScreen = PlotScreen
+            , schedulerOptions = Nothing
             }
     in
-        ( model, Http.send LoadRunTitles (getRuns "") )
+        model ! [ Http.send LoadRunTitles (getRuns ""), Http.send LoadTestSchedule getTestList ]
 
 
 {-| Contains a list of all the possible actions that can be executed within the
@@ -129,6 +168,12 @@ type Msg
     | ChangeGraphType String
     | ToggleFilterGroup String
     | ChangeConcurrencyComparison Int
+    | ChangeScreen Screen
+    | TestTitleClicked String
+    | LoadTestSchedule (Result Http.Error TestList)
+    | SchedulerFieldChanged SchedulerField String
+    | ScheduleTestClicked
+    | ScheduleTestSent (Result Http.Error Decode.Value)
 
 
 {-| Creates a Title alias to easier identify a string it refers to a graph title
@@ -257,6 +302,16 @@ update msg model =
             in
                 ( { model | runs = newRuns, filteredGroups = defaultFilteredGroups newRuns }, Cmd.none )
 
+        LoadTestSchedule (Err err) ->
+            let
+                _ =
+                    Debug.log "load test list" err
+            in
+                ( model, Cmd.none )
+
+        LoadTestSchedule (Ok tests) ->
+            ( { model | testList = tests }, Cmd.none )
+
         Hover point ->
             ( { model | hovered = point }, Cmd.none )
 
@@ -309,6 +364,59 @@ update msg model =
         ChangeConcurrencyComparison concurrency ->
             ( { model | concurrencyComparison = Just concurrency }, Cmd.none )
 
+        ChangeScreen screen ->
+            ( { model | currentScreen = screen }, Cmd.none )
+
+        TestTitleClicked title ->
+            let
+                schedulerOptions =
+                    model.schedulerOptions
+                        |> Maybe.map (\s -> { s | testTitle = title })
+                        |> Maybe.withDefault (SchedulerOptions title "" 10 300 10)
+            in
+                ( { model | schedulerOptions = Just schedulerOptions }, Cmd.none )
+
+        SchedulerFieldChanged field value ->
+            let
+                updateSchedulerField opts =
+                    case field of
+                        AnnotationTitle ->
+                            { opts | annotationTitle = value }
+
+                        ConcurrencyStart ->
+                            { opts | concurrencyStart = Result.withDefault opts.concurrencyStart (String.toInt value) }
+
+                        ConcurrencyEnd ->
+                            { opts | concurrencyEnd = Result.withDefault opts.concurrencyEnd (String.toInt value) }
+
+                        StepSize ->
+                            { opts | stepSize = Result.withDefault opts.stepSize (String.toInt value) }
+
+                schedulerOptions =
+                    model.schedulerOptions
+                        |> Maybe.map updateSchedulerField
+            in
+                ( { model | schedulerOptions = schedulerOptions }, Cmd.none )
+
+        ScheduleTestClicked ->
+            let
+                effect =
+                    model.schedulerOptions
+                        |> Maybe.map (\o -> Http.send ScheduleTestSent (postTestSchedule o))
+                        |> Maybe.withDefault Cmd.none
+            in
+                ( model, effect )
+
+        ScheduleTestSent (Err err) ->
+            let
+                _ =
+                    Debug.log "ScheduleTestSent" err
+            in
+                ( { model | schedulerOptions = Nothing }, Cmd.none )
+
+        ScheduleTestSent _ ->
+            ( { model | schedulerOptions = Nothing }, Http.send LoadTestSchedule getTestList )
+
 
 {-| Returns a Request object that can be used to load a list of RunInfo. This is
 used for displaying the list of runs that can be selected in the menu.
@@ -324,6 +432,29 @@ getRuns name =
 getSingleRun : Int -> Http.Request Run
 getSingleRun id =
     Http.get ("http://localhost:3000/runs/" ++ toString id) decodeRun
+
+
+{-| Returns a Request object that can be used to load the list of tests titles. This is
+used for displaying the list of runs that can be selected when scheduling a Run.
+-}
+getTestList : Http.Request TestList
+getTestList =
+    Http.get "http://localhost:3000/test-list" decodeTestList
+
+
+postTestSchedule : SchedulerOptions -> Http.Request Decode.Value
+postTestSchedule options =
+    let
+        body =
+            Http.multipartBody
+                [ Http.stringPart "testTitle" options.testTitle
+                , Http.stringPart "groupName" options.annotationTitle
+                , Http.stringPart "concurrencyStart" (fromInt options.concurrencyStart)
+                , Http.stringPart "concurrencyEnd" (fromInt options.concurrencyEnd)
+                , Http.stringPart "stepSize" (fromInt options.stepSize)
+                ]
+    in
+        Http.post "http://localhost:3000/test-list" body Decode.value
 
 
 {-| Finds all runs with the same group name and assigns them a color based on this
@@ -432,32 +563,134 @@ view : Model -> Html Msg
 view model =
     div []
         [ div [ class "view" ]
-            [ div [ class "view--left" ] [ leftPanel model.searchField model.runTitles ]
-            , div [ class "view--right" ] [ rightPanel model ]
+            [ div [ class "view--left" ] [ leftPanel model.currentScreen model.searchField model.runTitles ]
+            , div [ class "view--right" ]
+                [ case model.currentScreen of
+                    PlotScreen ->
+                        rightPlotPanel model
+
+                    ScheduleRunScreen ->
+                        rightSchedulePanel model.testList model.schedulerOptions
+                ]
+            ]
+        ]
+
+
+rightSchedulePanel : TestList -> Maybe SchedulerOptions -> Html Msg
+rightSchedulePanel (TestList list) options =
+    let
+        natSort ( a, _ ) ( b, _ ) =
+            case ( String.toInt (leftOf " -" a), String.toInt (leftOf " -" b) ) of
+                ( Ok aOk, Ok bOk ) ->
+                    compare aOk bOk
+
+                _ ->
+                    compare a b
+
+        testNames =
+            list
+                |> Dict.toList
+                |> List.sortWith natSort
+
+        active =
+            options
+                |> Maybe.map .testTitle
+                |> Maybe.withDefault ""
+    in
+        div [ class "view-plot view-plot__closed" ]
+            [ div [ class "view-plot--left" ] [ ul [] (List.map (buildTestItems active) testNames) ]
+            , div [ class "view-plot--right" ]
+                [ case options of
+                    Nothing ->
+                        text ""
+
+                    Just opts ->
+                        schedulerOptions opts
+                ]
+            ]
+
+
+buildTestItems : String -> ( String, RunStatus ) -> Html Msg
+buildTestItems selected ( title, status ) =
+    let
+        showStatus s =
+            case s of
+                NotYet ->
+                    text ""
+
+                _ ->
+                    text (" - " ++ toString s)
+
+        classes =
+            [ ( "selected", selected == title ) ]
+    in
+        li []
+            [ a [ onClick (TestTitleClicked title), classList classes ] [ text title ]
+            , showStatus status
+            ]
+
+
+schedulerOptions : SchedulerOptions -> Html Msg
+schedulerOptions options =
+    div [ class "view-plot--right__concurrency" ]
+        [ label []
+            [ span [] [ text "Test Annotation" ]
+            , input [ onInput (SchedulerFieldChanged AnnotationTitle), placeholder "E.g. Migrated to PHP 7" ] []
+            ]
+        , label []
+            [ span [] [ text "Concurrency Start" ]
+            , input [ onInput (SchedulerFieldChanged ConcurrencyStart), type_ "number", value (fromInt options.concurrencyStart) ] []
+            ]
+        , label []
+            [ span [] [ text "Concurrency Target" ]
+            , input [ onInput (SchedulerFieldChanged ConcurrencyEnd), type_ "number", value (fromInt options.concurrencyEnd) ] []
+            ]
+        , label []
+            [ span [] [ text "Step Size" ]
+            , input [ onInput (SchedulerFieldChanged StepSize), type_ "number", value (fromInt options.stepSize) ] []
+            ]
+        , label []
+            [ button [ onClick ScheduleTestClicked ] [ text "Schedule Test" ]
             ]
         ]
 
 
 {-| Renders the left panel (where the search button and the list of runs is)
 -}
-leftPanel : String -> List String -> Html Msg
-leftPanel defaultTitle runTitles =
-    header [ class "view-header" ]
-        [ h1 [ class "view-header__title" ] [ text "Wrecker-UI" ]
-        , div [ class "view-header__search" ]
-            [ input
-                [ type_ "text"
-                , name "run_name"
-                , placeholder "Search Run"
-                , value defaultTitle
-                , onEnter SearchButtonClicked
-                , onInput SearchFieldUpdated
+leftPanel : Screen -> String -> List String -> Html Msg
+leftPanel screen defaultTitle runTitles =
+    let
+        bottomItems =
+            case screen of
+                ScheduleRunScreen ->
+                    []
+
+                PlotScreen ->
+                    [ div [ class "view-header__search" ]
+                        [ input
+                            [ type_ "text"
+                            , name "run_name"
+                            , placeholder "Search Run"
+                            , value defaultTitle
+                            , onEnter SearchButtonClicked
+                            , onInput SearchFieldUpdated
+                            ]
+                            []
+                        , button [ onClick SearchButtonClicked ] [ text "go" ]
+                        ]
+                    , ul [ class "view-header__runs" ] (List.map runListItem runTitles)
+                    ]
+    in
+        header [ class "view-header" ]
+            ([ a [ onClick (ChangeScreen ScheduleRunScreen) ]
+                [ text "Schedule Run ➕ " ]
+             , h1 [ class "view-header__title" ]
+                [ a [ onClick (ChangeScreen PlotScreen) ]
+                    [ text "Wrecker-UI" ]
                 ]
-                []
-            , button [ onClick SearchButtonClicked ] [ text "go" ]
-            ]
-        , ul [ class "view-header__runs" ] (List.map runListItem runTitles)
-        ]
+             ]
+                ++ bottomItems
+            )
 
 
 runListItem : String -> Html Msg
@@ -467,8 +700,8 @@ runListItem title =
 
 {-| Renders the right panel (where the plot and other info are)
 -}
-rightPanel : Model -> Html Msg
-rightPanel model =
+rightPlotPanel : Model -> Html Msg
+rightPlotPanel model =
     case model.runs of
         [] ->
             text ""
@@ -890,3 +1123,32 @@ decodeDateTime datetimeString =
 
         Ok date ->
             Decode.succeed date
+
+
+decodeTestList : Decode.Decoder TestList
+decodeTestList =
+    Pipeline.decode TestList
+        |> Pipeline.required "tests" (Decode.dict decodeRunStatus)
+
+
+decodeRunStatus : Decode.Decoder RunStatus
+decodeRunStatus =
+    Decode.string
+        |> Decode.andThen
+            (\s ->
+                case s of
+                    "running" ->
+                        Decode.succeed Running
+
+                    "done" ->
+                        Decode.succeed Done
+
+                    "scheduled" ->
+                        Decode.succeed Scheduled
+
+                    "none" ->
+                        Decode.succeed NotYet
+
+                    _ ->
+                        Decode.fail ("Could not decode " ++ s ++ " as a RunStatus")
+            )

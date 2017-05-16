@@ -69,9 +69,12 @@ a:hover {
 
 .view-header__runs {
 	list-style: none;
+	font-size: 14px;
 }
 
-
+.view-header__runs li {
+	margin-bottom: 5px;
+}
 
 /* View example */
 
@@ -90,6 +93,10 @@ a:hover {
 	width: 75%;
 }
 
+.view-plot--left ul li a.selected {
+	color: rgb(255, 32, 120);
+}
+
 .view-plot--right {
 	padding-right: 3em;
 	width: 25%;
@@ -103,6 +110,17 @@ a:hover {
 
 .view-plot--right ul li {
 	margin:5px 0;
+}
+
+.view-plot--right__concurrency label {
+	display: block;
+	width: 100%;
+	margin: 15px 0;
+}
+
+.view-plot--right__concurrency label span {
+	display:block;
+	width: 100%;
 }
 
 .view-footer {

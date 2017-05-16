@@ -11,6 +11,7 @@
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE RecordWildCards #-}
+{-# LANGUAGE StrictData #-}
 
 module Model where
 
@@ -20,8 +21,10 @@ import Control.Monad.Trans.Control (MonadBaseControl(..))
 import Control.Monad.Trans.Reader (ReaderT)
 import qualified Control.Monad.Trans.Resource as R
 import Data.Aeson hiding (Value)
-import Data.Aeson.Types (Options(..))
+import Data.Aeson.Types (Options(..), Parser)
 import Data.Char (toLower)
+import qualified Data.Map as Map
+import Data.Map (Map)
 import Data.Monoid ((<>))
 import Data.Pool (Pool)
 import Data.Ratio (numerator)
@@ -29,6 +32,7 @@ import Data.Text (Text)
 import Data.Time.Clock (UTCTime)
 import Database.Esqueleto
 import Database.Persist (Key)
+import qualified Database.Persist as P
 import Database.Persist.Postgresql (withPostgresqlPool)
 import qualified Database.Persist.Sql as Sql
 import Database.Persist.Sqlite (withSqlitePool)
@@ -91,9 +95,20 @@ type TransactionMonad m a = ReaderT SqlBackend (R.ResourceT m) a
 
 type Database = Pool SqlBackend
 
+type DbAction m = ReaderT SqlBackend m
+
 data DbBackend
   = Postgresql ConnectInfo
   | Sqlite
+
+data WreckerRun = WreckerRun
+  { rollup :: Rollup
+  , pages :: [Page]
+  } deriving (Eq, Show)
+
+data RunInfo =
+  RunInfo Int
+          Run
 
 -------------------------------------
 -- Functions for working with the DB
@@ -211,6 +226,17 @@ set11Fields func (Value a, Value b, Value c, Value d, Value e, Value f, Value g,
     castInt :: Rational -> Int
     castInt = fromIntegral . numerator
 
+storeRunResults
+  :: DbMonad m
+  => Key Run -> WreckerRun -> DbAction m ()
+storeRunResults runKey WreckerRun {..} = do
+  let fullRollup = rollup {rollupRunId = Just runKey}
+      fullPage page = page {pageRunId = Just runKey}
+  --
+  -- We insert both the rollup and the pages in the same transaction
+  _ <- P.insert fullRollup
+  mapM_ (P.insert . fullPage) pages
+
 -------------------------------------
 -- JSON conversions
 -------------------------------------
@@ -274,3 +300,23 @@ instance FromJSON Page where
       failureData <- o .: "failed"
       pageFailedHits <- failureData .: "count"
       return Page {..}
+
+instance FromJSON WreckerRun where
+  parseJSON =
+    withObject "WreckerRun" $ \o -> do
+      rollup <- o .: "runs"
+      allPages <- o .: "per-request" :: Parser (Map Text Page)
+      -- Now we convert the pages dictionary into a list of 'Page'
+      -- by traversing all the structure with a accumulator function
+      let pages =
+            Map.foldlWithKey'
+              (\list url page -> page {pageUrl = Just url} : list)
+              [] -- The initial accumulator value
+              allPages
+      return WreckerRun {..}
+
+instance ToJSON RunInfo where
+  toJSON (RunInfo k run) =
+    let (Object encoded) = toJSON run -- first encode the run
+        (Object eKey) = object ["id" .= k] -- convert the key to json
+    in Object (encoded <> eKey) -- Add both parts together as an object

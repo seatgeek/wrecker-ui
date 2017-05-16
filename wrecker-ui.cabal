@@ -7,6 +7,7 @@ executable          wrecker-ui
     hs-source-dirs: .
     main-is:        Main.hs
     other-modules:  Model
+                  , Invoker
     ghc-options:    -Wall -threaded -O2 -rtsopts -with-rtsopts=-N
     extensions:     OverloadedStrings
     build-depends:  base   >= 4      && < 5
@@ -30,3 +31,10 @@ executable          wrecker-ui
                   , resource-pool
                   , postgresql-simple-url
                   , postgresql-simple
+                  , process
+                  , temporary
+                  , bytestring
+                  , iso8601-time
+                  , monad-loops
+                  , stm
+                  , async

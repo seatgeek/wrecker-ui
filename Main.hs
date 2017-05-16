@@ -1,15 +1,17 @@
 {-# LANGUAGE RecordWildCards, NamedFieldPuns, DeriveGeneric #-}
 
+import Control.Concurrent.Async (async, poll, Async)
+import qualified Control.Concurrent.STM as STM
 import Control.Monad.IO.Class (liftIO)
 import Data.Aeson hiding (json)
-import Data.Aeson.Types (Parser)
 import qualified Data.Map as Map
 import Data.Map (Map)
 import Data.Monoid ((<>))
-import Data.Text (Text)
+import Data.Text (Text, pack)
 import qualified Data.Text.Internal.Lazy as LText
 import Data.Time.Clock (getCurrentTime)
 import Database.PostgreSQL.Simple.URL (parseDatabaseUrl)
+import qualified Invoker as Wrecker
 import Network.HTTP.Types
 import Network.Wai.Middleware.Cors (simpleCors)
 import Prelude hiding (id)
@@ -21,25 +23,35 @@ import qualified Database.Persist as P
 import qualified Database.Persist.Sql as Sql
 import Model
        (Page(..), Run(..), Rollup(..), DbBackend(..), Database, Key,
-        withDb, runDbAction, runMigrations, findRuns, findRunStats, findPagesList, findPageStats)
+        RunInfo(..), WreckerRun(..), withDb, runDbAction, runMigrations,
+        findRuns, findRunStats, findPagesList, findPageStats,
+        storeRunResults)
 
-data WreckerRun = WreckerRun
-  { rollup :: Rollup
-  , pages :: [Page]
-  } deriving (Eq, Show)
+data RunStatus
+  = Running (Maybe (Async ()))
+  | Done
+  | Scheduled ScheduleOptions
+  | None
 
-data RunInfo =
-  RunInfo Int
-          Run
+data ScheduleOptions = ScheduleOptions
+  { gName :: Text
+  , cStart :: Int
+  , cEnd :: Int
+  , sStep :: Int
+  }
+
+type RunSchedule = STM.TVar (Map Text RunStatus)
 
 main :: IO ()
 main = do
   dbType <- selectDatabaseType
+  folder <- findAssetsFolder
+  testsList <- emptyRunSchedule
   withDb dbType $ \db ->
-    liftIO $ -- We're insde the DbMonad, so the results needs to be converted back to IO
+    liftIO $ -- We're inside the DbMonad, so the results needs to be converted back to IO
      do
       runMigrations db
-      routes db
+      routes folder db testsList
 
 ----------------------------------
 -- App initialization
@@ -71,12 +83,16 @@ selectDatabaseType = do
           putStrLn "Using PostgreSQL"
           return (Postgresql connDetails)
 
+emptyRunSchedule :: IO RunSchedule
+emptyRunSchedule = do
+  list <- Wrecker.listGroups
+  STM.newTVarIO (Map.fromList [(pack t, None) | t <- list])
+
 ----------------------------------
 -- Routes and middleware
 ----------------------------------
-routes :: Database -> IO ()
-routes db = do
-  folder <- findAssetsFolder
+routes :: String -> Database -> RunSchedule -> IO ()
+routes folder db testsList = do
   scotty 3000 $ -- Let's declare the routes and handlers
    do
     middleware simpleCors
@@ -100,6 +116,10 @@ routes db = do
     get "/runs/:id" (getRun db)
     --  ^ Returns the basic info for the run, the list of pages and the general stats
     get "/runs/:id/page" (getPageStats db)
+    --  ^ Returns the statistics for a specific page in a run
+    get "/test-list" (getTestList testsList)
+    --  ^ Returns the list of tests with the status of the last run for them if any
+    post "/test-list" (scheduleTest db testsList)
 
 ----------------------------------
 -- Controllers
@@ -155,15 +175,7 @@ storeResults db = do
       status ok200
   where
     storeStats :: Int -> WreckerRun -> IO ()
-    storeStats runId WreckerRun {rollup, pages} =
-      runDbAction db $ do
-        let runKey = toSqlKey runId
-            fullRollup = rollup {rollupRunId = Just runKey}
-            fullPage page = page {pageRunId = Just runKey}
-        --
-        -- We insert both the rollup and the pages in the same transaction
-        _ <- P.insert fullRollup
-        mapM_ (P.insert . fullPage) pages
+    storeStats runId run = runDbAction db $ storeRunResults (toSqlKey runId) run
 
 getRun :: Database -> ActionM ()
 getRun db = do
@@ -218,6 +230,86 @@ getPageStats db = do
             [] -> Nothing
             pageStats:_ -> Just pageStats
 
+getTestList :: RunSchedule -> ActionM ()
+getTestList testsList = do
+  tests <- liftAndCatchIO $ STM.atomically (STM.readTVar testsList)
+  json $ object ["status" .= True, "tests" .= tests]
+
+scheduleTest :: Database -> RunSchedule -> ActionM ()
+scheduleTest db testsList = do
+  testTitle <- param "testTitle"
+  groupName <- param "groupName"
+  cStart <- readEither <$> param "concurrencyStart"
+  cEnd <- readEither <$> param "concurrencyEnd"
+  sSize <- readEither <$> param "stepSize"
+  --
+  -- The lazy way of checking for conversion errors
+  -- We "unpack" the "Right" value from each var. If any "Left" is found
+  -- The operation is aborted and the whole subroutine retuns "Left"
+  let allParams = (ScheduleOptions groupName) <$> cStart <*> cEnd <*> sSize
+  case allParams of
+    Left err -> handleError err
+    Right schedule -> do
+      result <- liftAndCatchIO (doScheduling db testTitle schedule testsList)
+      either handleError handleSucccess result
+  where
+    handleError err = do
+      json $ object ["error" .= ("Invalid argument" :: Text), "reason" .= err]
+      status badRequest400
+    handleSucccess _ = do
+      json $ object ["success" .= True]
+      status created201
+
+doScheduling :: Database
+             -> Text
+             -> ScheduleOptions
+             -> STM.TVar (Map Text RunStatus)
+             -> IO (Either Text Bool)
+doScheduling db name schedule@ScheduleOptions {..} testsList = do
+  result <- STM.atomically changeList
+  case result of
+    Right True -> do
+      job <- async (Wrecker.escalate db gName name [cStart,sStep .. cEnd])
+      STM.atomically (updateStatus (Running $ Just job))
+      return result
+    _ -> return result
+  where
+    updateStatus :: RunStatus -> STM.STM ()
+    updateStatus s = STM.modifyTVar testsList $ Map.insert name s
+    -- | Modifies the test list if it is valid to insert the new schedule
+    --
+    changeList :: STM.STM (Either Text Bool)
+    changeList = do
+      tests <- STM.readTVar testsList
+      case canExecute tests of
+        Left e -> return (Left e)
+        Right immediate -> do
+          let val =
+                if immediate
+                  then (Running Nothing)
+                  else (Scheduled schedule)
+          updateStatus val
+          return $ Right immediate
+    -- | Returns whehter it is ok to schedule or run the fiven test
+    --   Left is returned when it is not possible to run the test.
+    --   "Right True" is returned when the test can be executed immediately
+    --   Otherwise the test is ok to be set for scheduling
+    --
+    canExecute list =
+      case Map.lookup name list of
+        Nothing -> Left "Test name does not exist"
+        Just (Running _) -> Left "This test is still running"
+        Just (Scheduled _) -> Left "This test is already scheduled"
+        Just _ -> Right (nothingIsRuning list)
+    -- | Checks that none of the tests in the list have a Running status
+    --
+    nothingIsRuning =
+      all
+        (\tStatus ->
+           case tStatus of
+             Running _ -> False
+             _ -> True)
+
 ----------------------------------
 -- Utilities
 ----------------------------------
@@ -232,22 +324,8 @@ toSqlKey = Sql.toSqlKey . fromIntegral
 ----------------------------------
 -- JSON Conversions
 ----------------------------------
-instance FromJSON WreckerRun where
-  parseJSON =
-    withObject "WreckerRun" $ \o -> do
-      rollup <- o .: "runs"
-      allPages <- o .: "per-request" :: Parser (Map Text Page)
-      -- Now we convert the pages dictionary into a list of 'Page'
-      -- by traversing all the structure with a accumulator function
-      let pages =
-            Map.foldlWithKey'
-              (\list url page -> page {pageUrl = Just url} : list)
-              [] -- The initial accumulator value
-              allPages
-      return WreckerRun {..}
-
-instance ToJSON RunInfo where
-  toJSON (RunInfo k run) =
-    let (Object encoded) = toJSON run -- first encode the run
-        (Object eKey) = object ["id" .= k] -- convert the key to json
-    in Object (encoded <> eKey) -- Add both parts together as an object
+instance ToJSON RunStatus where
+  toJSON (Running _) = String "running"
+  toJSON Done = String "done"
+  toJSON (Scheduled _) = String "scheduled"
+  toJSON None = String "none"
