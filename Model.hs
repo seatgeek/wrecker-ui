@@ -304,7 +304,7 @@ instance FromJSON Page where
 instance FromJSON WreckerRun where
   parseJSON =
     withObject "WreckerRun" $ \o -> do
-      rollup <- o .: "runs"
+      rollup <- o .: "rollup"
       allPages <- o .: "per-request" :: Parser (Map Text Page)
       -- Now we convert the pages dictionary into a list of 'Page'
       -- by traversing all the structure with a accumulator function

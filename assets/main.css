@@ -97,6 +97,11 @@ a:hover {
 	color: rgb(255, 32, 120);
 }
 
+.view-plot--left ul li .status {
+	color: #FF6961;
+	font-weight: bold;
+}
+
 .view-plot--right {
 	padding-right: 3em;
 	width: 25%;

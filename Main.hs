@@ -1,11 +1,13 @@
 {-# LANGUAGE RecordWildCards, NamedFieldPuns, DeriveGeneric #-}
 
-import Control.Concurrent.Async (async, poll, Async)
+import Control.Concurrent (threadDelay)
+import Control.Concurrent.Async (async, pollSTM, link, Async)
 import qualified Control.Concurrent.STM as STM
 import Control.Monad.IO.Class (liftIO)
 import Data.Aeson hiding (json)
 import qualified Data.Map as Map
 import Data.Map (Map)
+import qualified Data.Maybe as Maybe
 import Data.Monoid ((<>))
 import Data.Text (Text, pack)
 import qualified Data.Text.Internal.Lazy as LText
@@ -38,7 +40,7 @@ data ScheduleOptions = ScheduleOptions
   , cStart :: Int
   , cEnd :: Int
   , sStep :: Int
-  }
+  } deriving (Show)
 
 type RunSchedule = STM.TVar (Map Text RunStatus)
 
@@ -51,6 +53,8 @@ main = do
     liftIO $ -- We're inside the DbMonad, so the results needs to be converted back to IO
      do
       runMigrations db
+      scheduler <- async (runScheduler db testsList)
+      link scheduler
       routes folder db testsList
 
 ----------------------------------
@@ -87,6 +91,58 @@ emptyRunSchedule :: IO RunSchedule
 emptyRunSchedule = do
   list <- Wrecker.listGroups
   STM.newTVarIO (Map.fromList [(pack t, None) | t <- list])
+
+runScheduler :: Database -> RunSchedule -> IO ()
+runScheduler db testsList = do
+  threadDelay $ 5 * 1000 * 1000 -- wait 30 seconds
+  maybeSchedule <-
+    STM.atomically $ do
+      tests <- STM.readTVar testsList
+      cleaned <- cleanupFinished tests
+      STM.writeTVar testsList cleaned
+      pickOneToRun
+  process maybeSchedule
+  runScheduler db testsList
+  where
+    cleanupFinished tests = do
+      let running = filter isRunning (Map.toList tests)
+      polled <- mapM pollTest running
+      let updated = Map.fromList (Maybe.mapMaybe markAsDone polled)
+      return (Map.union updated tests)
+    --
+    -- | In the pair (title, job) poll the job for a status and return it
+    pollTest (title, Running (Just stat)) = do
+      res <- pollSTM stat
+      return (title, res)
+    pollTest (title, _) = return (title, Nothing)
+    --
+    -- | In the pair (title, status) if status is not Nothing, replace
+    --   the status with "Done", otherwise returns Nothing
+    markAsDone (_, Nothing) = Nothing
+    markAsDone (title, _) = Just (title, Done)
+    pickOneToRun = do
+      tests <- STM.readTVar testsList
+      return (take 1 $ filter isScheduled (Map.toList tests))
+    --
+    -- | Selects elements having Scheduled as status
+    isScheduled element =
+      case element of
+        (_, Scheduled _) -> True
+        _ -> False
+    --
+    -- | Selects elements having Running as status
+    isRunning element =
+      case element of
+        (_, Running _) -> True
+        _ -> False
+    --
+    -- | If any test was selected for running, then run it
+    process maybeSchedule =
+      case maybeSchedule of
+        (name, Scheduled schedule):_ -> do
+          _ <- doScheduling db name schedule testsList
+          return ()
+        _ -> return ()
 
 ----------------------------------
 -- Routes and middleware
@@ -260,22 +316,23 @@ scheduleTest db testsList = do
       json $ object ["success" .= True]
       status created201
 
-doScheduling :: Database
-             -> Text
-             -> ScheduleOptions
-             -> STM.TVar (Map Text RunStatus)
-             -> IO (Either Text Bool)
+doScheduling :: Database -> Text -> ScheduleOptions -> RunSchedule -> IO (Either Text Bool)
 doScheduling db name schedule@ScheduleOptions {..} testsList = do
   result <- STM.atomically changeList
   case result of
     Right True -> do
-      job <- async (Wrecker.escalate db gName name [cStart,sStep .. cEnd])
+      let steps = createSteps
+      job <- async (Wrecker.escalate db gName name steps)
       STM.atomically (updateStatus (Running $ Just job))
       return result
     _ -> return result
   where
+    createSteps =
+      if cStart == 1 || cStart == 0
+        then tail [0,sStep .. cEnd]
+        else [cStart,(cStart + sStep) .. cEnd]
     updateStatus :: RunStatus -> STM.STM ()
-    updateStatus s = STM.modifyTVar testsList $ Map.insert name s
+    updateStatus s = STM.modifyTVar' testsList $ Map.insert name s
     -- | Modifies the test list if it is valid to insert the new schedule
     --
     changeList :: STM.STM (Either Text Bool)
@@ -299,7 +356,6 @@ doScheduling db name schedule@ScheduleOptions {..} testsList = do
       case Map.lookup name list of
         Nothing -> Left "Test name does not exist"
         Just (Running _) -> Left "This test is still running"
-        Just (Scheduled _) -> Left "This test is already scheduled"
         Just _ -> Right (nothingIsRuning list)
     -- | Checks that none of the tests in the list have a Running status
     --

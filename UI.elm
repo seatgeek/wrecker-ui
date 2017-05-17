@@ -365,7 +365,16 @@ update msg model =
             ( { model | concurrencyComparison = Just concurrency }, Cmd.none )
 
         ChangeScreen screen ->
-            ( { model | currentScreen = screen }, Cmd.none )
+            let
+                effect =
+                    case screen of
+                        ScheduleRunScreen ->
+                            Http.send LoadTestSchedule getTestList
+
+                        PlotScreen ->
+                            Http.send LoadRunTitles (getRuns "")
+            in
+                ( { model | currentScreen = screen }, effect )
 
         TestTitleClicked title ->
             let
@@ -619,7 +628,7 @@ buildTestItems selected ( title, status ) =
                     text ""
 
                 _ ->
-                    text (" - " ++ toString s)
+                    span [ class "status" ] [ text (" - " ++ toString s) ]
 
         classes =
             [ ( "selected", selected == title ) ]
