@@ -432,7 +432,7 @@ used for displaying the list of runs that can be selected in the menu.
 -}
 getRuns : String -> Http.Request (List RunInfo)
 getRuns name =
-    Http.get ("http://localhost:3000/runs?match=" ++ (Http.encodeUri name))
+    Http.get ("/runs?match=" ++ (Http.encodeUri name))
         (Decode.field "runs" (Decode.list decodeRunInfo))
 
 
@@ -440,7 +440,7 @@ getRuns name =
 -}
 getSingleRun : Int -> Http.Request Run
 getSingleRun id =
-    Http.get ("http://localhost:3000/runs/" ++ toString id) decodeRun
+    Http.get ("/runs/" ++ toString id) decodeRun
 
 
 {-| Returns a Request object that can be used to load the list of tests titles. This is
@@ -448,7 +448,7 @@ used for displaying the list of runs that can be selected when scheduling a Run.
 -}
 getTestList : Http.Request TestList
 getTestList =
-    Http.get "http://localhost:3000/test-list" decodeTestList
+    Http.get "/test-list" decodeTestList
 
 
 postTestSchedule : SchedulerOptions -> Http.Request Decode.Value
@@ -463,7 +463,7 @@ postTestSchedule options =
                 , Http.stringPart "stepSize" (fromInt options.stepSize)
                 ]
     in
-        Http.post "http://localhost:3000/test-list" body Decode.value
+        Http.post "/test-list" body Decode.value
 
 
 {-| Finds all runs with the same group name and assigns them a color based on this

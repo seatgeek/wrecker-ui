@@ -10,9 +10,9 @@ import Data.Time.Clock (getCurrentTime)
 import Database.PostgreSQL.Simple.URL (parseDatabaseUrl)
 import Network.HTTP.Types
 import Network.Wai.Middleware.Cors (simpleCors)
-import Prelude hiding (id)
 import qualified System.Directory as Dir
 import System.Environment (lookupEnv)
+import Text.Read (readMaybe)
 import Web.Scotty
 
 import qualified Database.Persist as P
@@ -26,6 +26,11 @@ import qualified Scheduler
 
 main :: IO ()
 main = do
+  port <-
+    do taintedPort <- lookupEnv "WRECKER_PORT"
+       -- Reading the port from the ENV. Abort with an error on bad port
+       let varReader = maybe (error "Bad WRECKER_PORT") id
+       return (maybe 3000 (varReader . readMaybe) taintedPort)
   dbType <- selectDatabaseType
   folder <- findAssetsFolder
   testsList <- Scheduler.emptyRunSchedule
@@ -35,7 +40,7 @@ main = do
       runMigrations db
       scheduler <- async (Scheduler.runScheduler db testsList)
       link scheduler
-      routes folder db testsList
+      routes port folder db testsList
 
 ----------------------------------
 -- App initialization
@@ -70,9 +75,9 @@ selectDatabaseType = do
 ----------------------------------
 -- Routes and middleware
 ----------------------------------
-routes :: String -> Database -> Scheduler.RunSchedule -> IO ()
-routes folder db testsList = do
-  scotty 3000 $ -- Let's declare the routes and handlers
+routes :: Int -> String -> Database -> Scheduler.RunSchedule -> IO ()
+routes port folder db testsList = do
+  scotty port $ -- Let's declare the routes and handlers
    do
     middleware simpleCors
     -- ^ Useful when developing the elm app using a separate elm-live server
