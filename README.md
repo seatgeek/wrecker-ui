@@ -27,9 +27,24 @@ If you want to run from a folder where the `assets` directory is not present. Th
 WRECKER_ASSETS="/path/to/assets" wrecker-ui
 ```
 
-The server will start in port `3000`. You can then visit [http://localhost:300/](http://localhost:300/) to start using the UI.
+The server will start in port `3000`. You can then visit [http://localhost:3000/](http://localhost:3000/) to start using the UI.
 It wil not contain any data the first time. So you need to populate it yourself:
 
+Alternatively you can change the default port using the `WRECKER_PORT` env variable
+
+```sh
+WRECKER_PORT=8000 wrecker-ui
+```
+
+### Using PostgreSQL
+
+Wrecker-UI uses SQLite by default for storing the runs results. You can alternatively use PostgreSQL for this purpose when passing
+a connection string via the `WRECKER_DB` env variable:
+
+
+```sh
+WRECKER_DB="postgres://user:pass@host/db_name" wrecker-ui
+```
 
 ### Storing runs in the database
 
@@ -98,7 +113,8 @@ npm install -g elm-live
 Then you can run
 
 ```sh
-elm-live UI.elm --dir=assets/ --output=assets/app.js --open
+elm-live UI.elm --dir=assets/ --output=assets/app.js
+wrecker-ui
 ```
 
-This will open the browser at an address wht will reload automatically on each code change.
+Now you can use wrecker-ui as usual, but it will automatically reload the browser on any change done to the .elm files.
