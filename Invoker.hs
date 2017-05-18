@@ -69,7 +69,7 @@ wrecker title conc = do
       withSystemTempFile "wrecker.results" $ \file handle -> do
         callProcess
           "sg-wrecker"
-          ["--concurrency", show conc, "--match", unpack title, "--output-path", file]
+          ["--concurrency", show conc,"--log-level", "LevelInfo", "--match", unpack title, "--output-path", file]
         contents <- BS.hGetContents handle
         return (eitherDecodeStrict contents)
 
