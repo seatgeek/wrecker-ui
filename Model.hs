@@ -12,6 +12,7 @@
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE StrictData #-}
+{-# OPTIONS_GHC -fno-warn-orphans #-}
 
 module Model where
 
@@ -106,10 +107,6 @@ data WreckerRun = WreckerRun
   , pages :: [Page]
   } deriving (Eq, Show)
 
-data RunInfo =
-  RunInfo Int
-          Run
-
 -------------------------------------
 -- Functions for working with the DB
 -------------------------------------
@@ -136,39 +133,49 @@ runMigrations db = runDbAction db (Sql.runMigration migrateAll)
 -------------------------------------
 -- Finder queries
 -------------------------------------
-findRuns
+findRunsByMatch
   :: MonadIO m
   => Text -> SqlReadT m [Entity Run]
-findRuns match =
+findRunsByMatch match =
   let matchWithExpanse = val ("%" <> match <> "%")
   in select $
      from $ \r -> do
        where_ (r ^. RunMatch `like` matchWithExpanse)
        return r
 
+findRuns
+  :: MonadIO m
+  => [Key Run] -> SqlReadT m [Entity Run]
+findRuns keys =
+  select $
+  from $ \r -> do
+    where_ (r ^. RunId `in_` valList keys)
+    return r
+
 findPagesList
   :: MonadIO m
-  => Key Run -> SqlReadT m [Text]
-findPagesList runId = do
+  => [Key Run] -> SqlReadT m [Text]
+findPagesList runIds = do
   rows <-
     select $
     distinct $
     from $ \p -> do
-      where_ (p ^. PageRunId ==. just (val runId))
+      where_ (p ^. PageRunId `in_` justList (valList runIds))
       return (coalesceDefault [p ^. PageUrl] (val ""))
   return (fmap unValue rows)
 
 findRunStats
   :: MonadIO m
-  => Key Run -> SqlReadT m [Rollup]
-findRunStats runId = do
+  => [Key Run] -> SqlReadT m [(Key Run, Rollup)]
+findRunStats runIds = do
   rows <-
     select $
     from $ \rollup -> do
-      where_ (rollup ^. RollupRunId ==. just (val runId))
-      groupBy (rollup ^. RollupId)
+      where_ (rollup ^. RollupRunId `in_` justList (valList (runIds)))
+      groupBy (rollup ^. RollupId, rollup ^. RollupRunId)
       return
-        ( coalesceDefault [sum_ (rollup ^. RollupHits)] (val 0)
+        ( coalesceDefault [rollup ^. RollupRunId] (val (toKey 0))
+        , coalesceDefault [sum_ (rollup ^. RollupHits)] (val 0)
         , coalesceDefault [max_ (rollup ^. RollupMaxTime)] (val 0)
         , coalesceDefault [avg_ (rollup ^. RollupMeanTime)] (val 0)
         , coalesceDefault [min_ (rollup ^. RollupMinTime)] (val 0)
@@ -185,16 +192,17 @@ findRunStats runId = do
 
 findPageStats
   :: MonadIO m
-  => Key Run -> Text -> SqlReadT m [Page]
-findPageStats runId url = do
+  => [Key Run] -> Text -> SqlReadT m [(Key Run, Page)]
+findPageStats runIds url = do
   rows <-
     select $
     from $ \page -> do
-      where_ (page ^. PageRunId ==. just (val runId))
+      where_ (page ^. PageRunId `in_` justList (valList runIds))
       where_ (page ^. PageUrl ==. just (val url))
       groupBy (page ^. PageRunId, page ^. PageUrl)
       return
-        ( coalesceDefault [sum_ (page ^. PageHits)] (val 0)
+        ( coalesceDefault [page ^. PageRunId] (val (toKey 0))
+        , coalesceDefault [sum_ (page ^. PageHits)] (val 0)
         , coalesceDefault [max_ (page ^. PageMaxTime)] (val 0)
         , coalesceDefault [avg_ (page ^. PageMeanTime)] (val 0)
         , coalesceDefault [min_ (page ^. PageMinTime)] (val 0)
@@ -209,19 +217,23 @@ findPageStats runId url = do
   where
     buildPage fields = set11Fields (Page Nothing (Just url)) fields
 
-set11Fields func (Value a, Value b, Value c, Value d, Value e, Value f, Value g, Value h, Value i, Value j, Value k) =
-  func -- Some fields need casting
-    (castInt a)
-    b
-    c
-    d
-    e
-    f
-    (castInt g)
-    (castInt h)
-    (castInt i)
-    (castInt j)
-    k
+toKey :: Int -> Key Run
+toKey key = Sql.toSqlKey . fromIntegral $ key
+
+set11Fields func (Value key, Value a, Value b, Value c, Value d, Value e, Value f, Value g, Value h, Value i, Value j, Value k) =
+  ( key
+  , func -- Some fields need casting
+      (castInt a)
+      b
+      c
+      d
+      e
+      f
+      (castInt g)
+      (castInt h)
+      (castInt i)
+      (castInt j)
+      k)
   where
     castInt :: Rational -> Int
     castInt = fromIntegral . numerator
@@ -315,8 +327,10 @@ instance FromJSON WreckerRun where
               allPages
       return WreckerRun {..}
 
-instance ToJSON RunInfo where
-  toJSON (RunInfo k run) =
+
+instance ToJSON a =>
+         ToJSON (Entity a) where
+  toJSON (Entity k run) =
     let (Object encoded) = toJSON run -- first encode the run
         (Object eKey) = object ["id" .= k] -- convert the key to json
     in Object (encoded <> eKey) -- Add both parts together as an object

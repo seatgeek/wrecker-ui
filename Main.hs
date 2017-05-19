@@ -2,9 +2,12 @@
 
 import Control.Concurrent.Async (async, link)
 import Control.Monad.IO.Class (liftIO)
+import Control.Monad.IO.Class (MonadIO)
 import Data.Aeson hiding (json)
+import Data.Maybe (catMaybes, listToMaybe)
 import Data.Monoid ((<>))
 import Data.Text (Text)
+import qualified Data.Text as Text
 import qualified Data.Text.Internal.Lazy as LText
 import Data.Time.Clock (getCurrentTime)
 import Database.PostgreSQL.Simple.URL (parseDatabaseUrl)
@@ -19,9 +22,9 @@ import qualified Database.Persist as P
 import qualified Database.Persist.Sql as Sql
 import Model
        (Page(..), Run(..), Rollup(..), DbBackend(..), Database, Key,
-        RunInfo(..), WreckerRun(..), withDb, runDbAction, runMigrations,
-        findRuns, findRunStats, findPagesList, findPageStats,
-        storeRunResults)
+        TransactionMonad, WreckerRun(..), withDb, runDbAction,
+        runMigrations, findRunsByMatch, findRuns, findRunStats,
+        findPagesList, findPageStats, storeRunResults)
 import qualified Scheduler
 
 main :: IO ()
@@ -97,6 +100,8 @@ routes port folder db testsList = do
     --  ^ Creates a new run and returns the id
     post "/runs/:id" (storeResults db)
     --  ^ Gets the JSON blob from a wrecker run and stores them in the DB
+    get "/runs/rollup" (getManyRuns db)
+    --  ^ Returns the basic info for the passed runs, the list of pages and the general stats
     get "/runs/:id" (getRun db)
     --  ^ Returns the basic info for the run, the list of pages and the general stats
     get "/runs/:id/page" (getPageStats db)
@@ -114,14 +119,8 @@ listRuns db = do
   result <- liftAndCatchIO (fetchRuns match)
   json $ object ["runs" .= result, "success" .= True]
   where
-    fetchRuns :: Text -> IO [RunInfo]
-    fetchRuns match =
-      runDbAction db $ do
-        entities <- findRuns match
-        return $ fmap extractAndConvert entities
-    extractAndConvert e =
-      let key = fromIntegral . Sql.fromSqlKey . Sql.entityKey $ e
-      in RunInfo key (Sql.entityVal e)
+    fetchRuns :: Text -> IO [P.Entity Run]
+    fetchRuns match = runDbAction db $ findRunsByMatch match
 
 createRun :: Database -> ActionM ()
 createRun db = do
@@ -166,15 +165,16 @@ getRun db = do
   rId <- readEither <$> param "id"
   case rId of
     Right runId -> do
-      result <- liftAndCatchIO (fetchRunStats runId)
-      maybe (errorResponse errorTxt) sendResult result
+      (stats, pages) <- liftAndCatchIO (runDbAction db $ fetchRunStats [runId])
+      -- if the list is empty, errorResponse, otherwise call sendResult with the first in the list
+      maybe (errorResponse errorTxt) (sendResult pages) (listToMaybe stats)
     Left err -> errorResponse err
   where
     errorTxt :: Text
     errorTxt = "No query result"
     -- | Transforms the SQL result into a JSON response
     --
-    sendResult (run, stats, list) = do
+    sendResult list (run, stats) = do
       json $ object ["run" .= run, "stats" .= stats, "pages" .= list]
       status ok200
     -- | Responds with a JSON error
@@ -182,20 +182,52 @@ getRun db = do
     errorResponse err = do
       json $ object ["error" .= ("Invalid run id" :: Text), "reason" .= err]
       status badRequest400
-    -- | Fetches the run stats in sqlite
+
+-- | Fetches the run stats in the datatabase
+--
+fetchRunStats
+  :: MonadIO m
+  => [Int] -> TransactionMonad m ([(P.Entity Run, Rollup)], [Text])
+fetchRunStats runId = do
+  let runKey = toSqlKey <$> runId
+  stats <- findRunStats runKey
+  list <- findPagesList runKey
+  runs <- findRuns (fmap fst stats)
+  return
+    ( [ (run, rollup) -- Locally doing a join by the same run key
+      | (sKey, rollup) <- stats
+      , run@(P.Entity rKey _) <- runs
+      , sKey == rKey
+      ]
+    , list)
+
+getManyRuns :: Database -> ActionM ()
+getManyRuns db = do
+  allIds <-
+    do longString <- param "ids"
+       let idsList = fmap Text.unpack (Text.splitOn "," longString)
+           parsedList = fmap readMaybe idsList
+       liftAndCatchIO $print idsList
+       return (catMaybes parsedList)
+  case allIds of
+    [] -> errorResponse "Invalid list of ids"
+    _ -> do
+      result <- liftAndCatchIO (runDbAction db $ fetchRunStats allIds)
+      sendResult result
+  where
+    sendResult (results, pages)
+      -- I'm cheating there, by setting the same pages to all different runs. This should
+      -- be fixed if we want insight into the individual pages for each run
+     = do
+      let buildObject (run, stats) = object ["run" .= run, "stats" .= stats, "pages" .= pages]
+      json $ fmap buildObject results
+      status ok200
+    -- | Responds with a JSON error
     --
-    fetchRunStats :: Int -> IO (Maybe (RunInfo, Rollup, [Text]))
-    fetchRunStats runId =
-      runDbAction db $ do
-        let runKey = toSqlKey runId
-        stats <- findRunStats runKey
-        list <- findPagesList runKey
-        run <- P.get runKey
-        return $
-          case (run, stats) of
-            (Nothing, _) -> Nothing
-            (_, []) -> Nothing
-            (Just r, statistics:_) -> Just (RunInfo runId r, statistics, list)
+    errorResponse :: Text -> ActionM ()
+    errorResponse err = do
+      json $ object ["reason" .= err]
+      status badRequest400
 
 getPageStats :: Database -> ActionM ()
 getPageStats db = do
@@ -208,11 +240,8 @@ getPageStats db = do
     fetchPageStats runId pageName =
       runDbAction db $ do
         let runKey = toSqlKey runId
-        result <- findPageStats runKey pageName
-        return $
-          case result of
-            [] -> Nothing
-            pageStats:_ -> Just pageStats
+        result <- findPageStats [runKey] pageName
+        return $ listToMaybe (fmap snd result)
 
 getTestList :: Scheduler.RunSchedule -> ActionM ()
 getTestList testsList = do

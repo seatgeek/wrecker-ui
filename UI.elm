@@ -162,7 +162,7 @@ type Msg
     | SearchButtonClicked
     | LoadRunTitles (Result Http.Error (List RunInfo))
     | LoadRunList (Result Http.Error (List RunInfo))
-    | LoadRunStats (Result Http.Error Run)
+    | LoadRunStats (Result Http.Error (List Run))
     | Hover (Maybe Point)
     | RunTitleClicked String
     | ChangeGraphType String
@@ -284,21 +284,20 @@ update msg model =
 
         LoadRunList (Ok runs) ->
             let
-                toRequest { id } =
-                    Http.send LoadRunStats (getSingleRun id)
-
-                requests =
-                    List.map toRequest runs
+                ids =
+                    runs
+                        |> List.map .id
+                        |> List.foldl (\id acc -> acc ++ "," ++ fromInt id) ""
             in
-                ( model, Cmd.batch requests )
+                ( model, Http.send LoadRunStats (getManyRuns ids) )
 
         LoadRunStats (Err _) ->
             ( model, Cmd.none )
 
-        LoadRunStats (Ok run) ->
+        LoadRunStats (Ok runs) ->
             let
                 newRuns =
-                    run :: model.runs
+                    List.append runs model.runs
             in
                 ( { model | runs = newRuns, filteredGroups = defaultFilteredGroups newRuns }, Cmd.none )
 
@@ -441,6 +440,13 @@ getRuns name =
 getSingleRun : Int -> Http.Request Run
 getSingleRun id =
     Http.get ("/runs/" ++ toString id) decodeRun
+
+
+{-| Returns a Request object that can be used to load a list of run statistics
+-}
+getManyRuns : String -> Http.Request (List Run)
+getManyRuns ids =
+    Http.get ("/runs/rollup/?ids=" ++ ids) (Decode.list decodeRun)
 
 
 {-| Returns a Request object that can be used to load the list of tests titles. This is
