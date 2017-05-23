@@ -102,10 +102,10 @@ routes port folder db testsList = do
     --  ^ Gets the JSON blob from a wrecker run and stores them in the DB
     get "/runs/rollup" (getManyRuns db)
     --  ^ Returns the basic info for the passed runs, the list of pages and the general stats
+    get "/runs/page" (getPageStats db)
+    --  ^ Returns the statistics for a single or multiple runs
     get "/runs/:id" (getRun db)
     --  ^ Returns the basic info for the run, the list of pages and the general stats
-    get "/runs/:id/page" (getPageStats db)
-    --  ^ Returns the statistics for a specific page in a run
     get "/test-list" (getTestList testsList)
     --  ^ Returns the list of tests with the status of the last run for them if any
     post "/test-list" (scheduleTest db testsList)
@@ -203,12 +203,7 @@ fetchRunStats runId = do
 
 getManyRuns :: Database -> ActionM ()
 getManyRuns db = do
-  allIds <-
-    do longString <- param "ids"
-       let idsList = fmap Text.unpack (Text.splitOn "," longString)
-           parsedList = fmap readMaybe idsList
-       liftAndCatchIO $print idsList
-       return (catMaybes parsedList)
+  allIds <- parseIdList
   case allIds of
     [] -> errorResponse "Invalid list of ids"
     _ -> do
@@ -231,17 +226,16 @@ getManyRuns db = do
 
 getPageStats :: Database -> ActionM ()
 getPageStats db = do
-  runId <- param "id"
+  allIds <- parseIdList
   pageName <- param "name"
-  page <- liftAndCatchIO (fetchPageStats runId pageName)
+  page <- liftAndCatchIO (fetchPageStats allIds pageName)
   json page
   where
-    fetchPageStats :: Int -> Text -> IO (Maybe Page)
-    fetchPageStats runId pageName =
+    fetchPageStats :: [Int] -> Text -> IO [Page]
+    fetchPageStats runIds pageName =
       runDbAction db $ do
-        let runKey = toSqlKey runId
-        result <- findPageStats [runKey] pageName
-        return $ listToMaybe (fmap snd result)
+        let runKeys = toSqlKey <$> runIds
+        findPageStats runKeys pageName
 
 getTestList :: Scheduler.RunSchedule -> ActionM ()
 getTestList testsList = do
@@ -280,6 +274,14 @@ optionalParam
   :: (Monoid a, Parsable a)
   => LText.Text -> ActionM a
 optionalParam name = param name `rescue` (\_ -> return mempty)
+
+parseIdList :: ActionM [Int]
+parseIdList = do
+  longString <- param "ids"
+  let idsList = fmap Text.unpack (Text.splitOn "," longString)
+      parsedList = fmap readMaybe idsList
+  liftAndCatchIO $print idsList
+  return (catMaybes parsedList)
 
 toSqlKey :: Int -> Key Run
 toSqlKey = Sql.toSqlKey . fromIntegral

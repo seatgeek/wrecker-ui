@@ -65,7 +65,7 @@ type alias RunInfo =
     }
 
 
-{-| A run is a colleciton of pages that were tested, the load stats
+{-| A run is a collection of pages that were tested, the load stats
 and also the basic information related to the run itself.
 -}
 type alias Run =
@@ -75,6 +75,19 @@ type alias Run =
     }
 
 
+{-| A page is the combination of a url and a run id. It contains the
+statistics related to loading such url
+-}
+type alias Page =
+    { url : String
+    , runId : Int
+    , stats : Stats
+    }
+
+
+{-| Wrecker-UI is able to schedule new tests from the iterface. Test Runs can
+have any of the following statuses as reported by the server.
+-}
 type RunStatus
     = Running
     | Done
@@ -82,6 +95,9 @@ type RunStatus
     | NotYet
 
 
+{-| Represents the list of possible tests that can be run in the server, and
+their corresponding latest known status.
+-}
 type TestList
     = TestList (Dict String RunStatus)
 
@@ -94,11 +110,17 @@ type alias GraphData =
     ( String, Run )
 
 
+{-| What should we shouw in the interface? Either the plot view or the list of tests to
+run with their latest known status.
+-}
 type Screen
     = PlotScreen
     | ScheduleRunScreen
 
 
+{-| It is possibible to parametrize test runs in the server. This type contains the fields
+that can be parametrized for each run.
+-}
 type alias SchedulerOptions =
     { testTitle : String
     , annotationTitle : String
@@ -108,11 +130,24 @@ type alias SchedulerOptions =
     }
 
 
+{-| This is a helper type that is used for rendering the scheduler options form.
+By enumerating all fields that can be modified, we can easily track changes to each
+of those fields.
+-}
 type SchedulerField
     = AnnotationTitle
     | ConcurrencyStart
     | ConcurrencyEnd
     | StepSize
+
+
+{-| Statistics can be explored down to a per-page level. This type represents the
+fact that the user has chosed to see the statistics for a specific page. The first
+member in the constructor represents the page url and the second member are the
+statistics for such url indexed by run id.
+-}
+type PageSelection
+    = PageSelection String (Dict Int Page)
 
 
 {-| The Model contains all the applicaiton state that is used to render the plot
@@ -126,6 +161,7 @@ type alias Model =
     , hovered : Maybe Point
     , filteredGroups : List String
     , concurrencyComparison : Maybe Int
+    , selectedPage : Maybe PageSelection
     , testList : TestList
     , currentScreen : Screen
     , schedulerOptions : Maybe SchedulerOptions
@@ -145,6 +181,7 @@ init =
             , graph = "Mean Time / Concurrency"
             , hovered = Nothing
             , filteredGroups = []
+            , selectedPage = Nothing
             , concurrencyComparison = Nothing
             , testList = TestList Dict.empty
             , currentScreen = PlotScreen
@@ -163,10 +200,12 @@ type Msg
     | LoadRunTitles (Result Http.Error (List RunInfo))
     | LoadRunList (Result Http.Error (List RunInfo))
     | LoadRunStats (Result Http.Error (List Run))
+    | LoadPageStats (Result Http.Error (List Page))
     | Hover (Maybe Point)
     | RunTitleClicked String
     | ChangeGraphType String
     | ToggleFilterGroup String
+    | PageNameClicked String
     | ChangeConcurrencyComparison Int
     | ChangeScreen Screen
     | TestTitleClicked String
@@ -225,6 +264,9 @@ displaying
 validGraphs : List ( Title, Graph )
 validGraphs =
     let
+        -- Let's declare a base definition for a Scatter plot that many other plots can
+        -- extend with additional options. (.run >> .concurrency) means first get the run
+        -- field and then get its concurrency field
         baseScatter =
             Scatter "Concurrency" "Resp. Time (s)" (.run >> .concurrency >> toFloat)
     in
@@ -248,15 +290,19 @@ validGraphs =
 
 
 {-| Handles all the actions performed in the app and returns a pair with the mutated model
-and the next command to be executed to continue with the normal applicaiton flow.
+and the next command to be executed to continue with the normal application flow.
 -}
 update : Msg -> Model -> ( Model, Cmd Msg )
 update msg model =
     case msg of
         SearchFieldUpdated name ->
+            -- When writing anything in the search field we just need to store it.
+            -- no other changes are required
             ( { model | searchField = name }, Cmd.none )
 
         SearchButtonClicked ->
+            -- But when the search button is clicked, then we need to reset the previous
+            -- results state and trigger a HTTP request to get the results.
             ( { model
                 | runs = []
                 , filteredGroups = []
@@ -265,6 +311,9 @@ update msg model =
             )
 
         RunTitleClicked name ->
+            -- Similarly to clicking the search button, when clicming on one of the test
+            -- titles, we need to reset the previous results and then trigger the same
+            -- HTTP request to fetch new results.
             ( { model
                 | searchField = name
                 , runs = []
@@ -273,48 +322,81 @@ update msg model =
             , Http.send LoadRunList (getRuns name)
             )
 
-        LoadRunTitles (Err _) ->
-            ( model, Cmd.none )
+        LoadRunTitles (Err error) ->
+            -- If there was an error loading the run titles, we just log it in the console
+            debugError model error
 
         LoadRunTitles (Ok runs) ->
             ( { model | runTitles = extractTitles runs }, Cmd.none )
 
-        LoadRunList (Err _) ->
-            ( model, Cmd.none )
+        LoadRunList (Err error) ->
+            -- If there was an error loading the list of tests, we just log it in the console
+            debugError model error
 
         LoadRunList (Ok runs) ->
-            let
-                ids =
-                    runs
-                        |> List.map .id
-                        |> List.foldl (\id acc -> acc ++ "," ++ fromInt id) ""
-            in
-                ( model, Http.send LoadRunStats (getManyRuns ids) )
+            -- But if we could successfully load the run list, then we try to find all the stats
+            -- for such list immediately using a HTTP request
+            ( model, Http.send LoadRunStats (getManyRuns (List.map .id runs)) )
 
-        LoadRunStats (Err _) ->
-            ( model, Cmd.none )
+        LoadRunStats (Err error) ->
+            -- If there was an error loading the run stats, we just log it in the console
+            debugError model error
 
         LoadRunStats (Ok runs) ->
+            -- But if we could successfully load the run stats, then we store the results and
+            -- calculate run groups that need be shown
             let
                 newRuns =
                     List.append runs model.runs
             in
-                ( { model | runs = newRuns, filteredGroups = defaultFilteredGroups newRuns }, Cmd.none )
+                ( { model
+                    | runs = newRuns
+                    , filteredGroups = defaultFilteredGroups newRuns
+                    , selectedPage = Nothing
+                  }
+                , Cmd.none
+                )
 
-        LoadTestSchedule (Err err) ->
-            let
-                _ =
-                    Debug.log "load test list" err
-            in
-                ( model, Cmd.none )
+        LoadPageStats (Err error) ->
+            -- If there was an error loading the page stats, we just log it in the console
+            debugError model error
+
+        LoadPageStats (Ok pages) ->
+            -- But if we successfully get the HTTP response for the page stats, then we need
+            -- to store them, after indexing them by runId
+            case model.selectedPage of
+                Nothing ->
+                    -- If nothing was selected, yet we still got some http results, than means we
+                    -- are facing a race condition. Better respect that the user has made no selection
+                    -- and discaard the results entirely.
+                    ( model, Cmd.none )
+
+                Just (PageSelection page _) ->
+                    let
+                        -- let's create a dictionary of page stats indexed by their runId
+                        indexed =
+                            pages
+                                |> List.map (\p -> ( p.runId, p ))
+                                |> Dict.fromList
+                    in
+                        ( { model | selectedPage = Just (PageSelection page indexed) }, Cmd.none )
+
+        LoadTestSchedule (Err error) ->
+            -- If there was an error loading the test schedule, we just log it in the console
+            debugError model error
 
         LoadTestSchedule (Ok tests) ->
+            -- After getting the ajax results for the test schedule we need do nothing else but store them
             ( { model | testList = tests }, Cmd.none )
 
         Hover point ->
+            -- When the mouse pointer is over or has left a point in the graph, we need to record that change
+            -- so that we can render or hide the selection hints.
             ( { model | hovered = point }, Cmd.none )
 
         ChangeGraphType name ->
+            -- If the user choses to change the graph type we need to first extract the graph definition for
+            -- the selection, and then store in the model the graph type, so it can be rendered in the view.
             let
                 graphType =
                     validGraphs
@@ -332,6 +414,9 @@ update msg model =
                         Just ( t, _ ) ->
                             ( t, Nothing )
 
+                -- When comparing diffent runs by concurrency level, we need to pick an
+                -- appropriate concurrency level for the first showing of the graph.
+                -- In this case just selecting the maximum concurrency may be just good enough.
                 appropriateConcurrency runs =
                     runs
                         |> List.map (.run >> .concurrency)
@@ -345,6 +430,9 @@ update msg model =
                 )
 
         ToggleFilterGroup group ->
+            -- If a group name is clicked, then we need to hide its corresponding points in the graph.
+            -- When it is clicked for a second time, then we show them again.
+            -- We also need to make sure that there is always at least one group visible in the plot.
             let
                 filteredGroups =
                     if List.member group model.filteredGroups then
@@ -360,10 +448,37 @@ update msg model =
             in
                 ( { model | filteredGroups = newFilteredGroups }, Cmd.none )
 
+        PageNameClicked page ->
+            -- When a page URL is clicked in the list, we want update the plot to show the statistics for
+            -- that specific page. We do this by fetching the stats from the server for all of the runs
+            -- that currently are being shown in the plot.
+            let
+                effect =
+                    Http.send LoadPageStats (getPageStats (model.runs |> List.map (.run >> .id)) page)
+
+                result =
+                    ( { model | selectedPage = Just (PageSelection page Dict.empty) }, effect )
+            in
+                case model.selectedPage of
+                    Nothing ->
+                        result
+
+                    Just (PageSelection currentPage _) ->
+                        if page == currentPage then
+                            -- If the user clicks the page name for the second time, then we clear
+                            -- the selection
+                            ( { model | selectedPage = Nothing }, Cmd.none )
+                        else
+                            result
+
         ChangeConcurrencyComparison concurrency ->
+            -- When changing the concurrency level for the comparison, we just need to store the selection
             ( { model | concurrencyComparison = Just concurrency }, Cmd.none )
 
         ChangeScreen screen ->
+            -- When toggling between the schedule runs view and the plot view, we need to load the
+            -- basic information for each of them via a HTTP request.
+            -- Additionally, we store the "view" selection for the rendering phase
             let
                 effect =
                     case screen of
@@ -376,6 +491,8 @@ update msg model =
                 ( { model | currentScreen = screen }, effect )
 
         TestTitleClicked title ->
+            -- In the Scheduling view, when the user clicks a test title, we populate the default
+            -- scheduling options to show in the form.
             let
                 schedulerOptions =
                     model.schedulerOptions
@@ -385,6 +502,9 @@ update msg model =
                 ( { model | schedulerOptions = Just schedulerOptions }, Cmd.none )
 
         SchedulerFieldChanged field value ->
+            -- This is a catch-all for any changes done to the fields in the scheduling options form.
+            -- depending on the value for the field parameter, we update a different field in the scheduling
+            -- options record.
             let
                 updateSchedulerField opts =
                     case field of
@@ -407,6 +527,8 @@ update msg model =
                 ( { model | schedulerOptions = schedulerOptions }, Cmd.none )
 
         ScheduleTestClicked ->
+            -- Once the schedule test button is clicked, we take the scheduling options record and post it
+            -- using a HTTP request, so that the test is run in the server.
             let
                 effect =
                     model.schedulerOptions
@@ -416,6 +538,8 @@ update msg model =
                 ( model, effect )
 
         ScheduleTestSent (Err err) ->
+            -- If we got an error when sending the test to the scheduler, we log the error, but also
+            -- hide the scheduler form.
             let
                 _ =
                     Debug.log "ScheduleTestSent" err
@@ -423,7 +547,18 @@ update msg model =
                 ( { model | schedulerOptions = Nothing }, Cmd.none )
 
         ScheduleTestSent _ ->
+            -- If the test is created successfully in the scheduler, we re-load the scheduler information
+            -- from the server in order to reflect the new status in the list of tests.
             ( { model | schedulerOptions = Nothing }, Http.send LoadTestSchedule getTestList )
+
+
+debugError : Model -> a -> ( Model, Cmd msg )
+debugError model err =
+    let
+        _ =
+            Debug.log "error:" err
+    in
+        ( model, Cmd.none )
 
 
 {-| Returns a Request object that can be used to load a list of RunInfo. This is
@@ -444,9 +579,30 @@ getSingleRun id =
 
 {-| Returns a Request object that can be used to load a list of run statistics
 -}
-getManyRuns : String -> Http.Request (List Run)
+getManyRuns : List Int -> Http.Request (List Run)
 getManyRuns ids =
-    Http.get ("/runs/rollup/?ids=" ++ ids) (Decode.list decodeRun)
+    let
+        --Convert the list of ids into a comma separated string of numbers
+        idsQ =
+            ids
+                |> List.foldl (\id acc -> acc ++ fromInt id ++ ",") ""
+    in
+        Http.get ("/runs/rollup/?ids=" ++ idsQ) (Decode.list decodeRun)
+
+
+{-| Returns a Request object that can be used to load a list of page statistics
+-}
+getPageStats : List Int -> String -> Http.Request (List Page)
+getPageStats ids page =
+    let
+        --Convert the list of ids into a comma separated string of numbers
+        idsQ =
+            ids
+                |> List.foldl (\id acc -> acc ++ fromInt id ++ ",") ""
+    in
+        Http.get
+            ("/runs/page?ids=" ++ idsQ ++ "&name=" ++ (Http.encodeUri page))
+            (Decode.list decodePage)
 
 
 {-| Returns a Request object that can be used to load the list of tests titles. This is
@@ -594,18 +750,10 @@ view model =
 rightSchedulePanel : TestList -> Maybe SchedulerOptions -> Html Msg
 rightSchedulePanel (TestList list) options =
     let
-        natSort ( a, _ ) ( b, _ ) =
-            case ( String.toInt (leftOf " -" a), String.toInt (leftOf " -" b) ) of
-                ( Ok aOk, Ok bOk ) ->
-                    compare aOk bOk
-
-                _ ->
-                    compare a b
-
         testNames =
             list
                 |> Dict.toList
-                |> List.sortWith natSort
+                |> List.sortWith (\( a, _ ) ( b, _ ) -> natSort a b)
 
         active =
             options
@@ -693,7 +841,11 @@ leftPanel screen defaultTitle runTitles =
                             []
                         , button [ onClick SearchButtonClicked ] [ text "go" ]
                         ]
-                    , ul [ class "view-header__runs" ] (List.map runListItem runTitles)
+                    , ul [ class "view-header__runs" ]
+                        (runTitles
+                            |> List.sortWith natSort
+                            |> List.map (runListItem defaultTitle)
+                        )
                     ]
     in
         header [ class "view-header" ]
@@ -708,9 +860,23 @@ leftPanel screen defaultTitle runTitles =
             )
 
 
-runListItem : String -> Html Msg
-runListItem title =
-    li [ onClick (RunTitleClicked title) ] [ a [] [ text title ] ]
+runListItem : String -> String -> Html Msg
+runListItem selected title =
+    let
+        classes =
+            [ ( "selected", selected == title ) ]
+    in
+        li [ onClick (RunTitleClicked title) ] [ a [ classList classes ] [ text title ] ]
+
+
+natSort : String -> String -> Order
+natSort a b =
+    case ( String.toInt (leftOf " -" a), String.toInt (leftOf " -" b) ) of
+        ( Ok aOk, Ok bOk ) ->
+            compare aOk bOk
+
+        _ ->
+            compare a b
 
 
 {-| Renders the right panel (where the plot and other info are)
@@ -731,14 +897,22 @@ rightPlotPanel model =
 {-| Renders the right column where the graph selector and lists of pages reside
 -}
 rightmostPanel : Model -> Html Msg
-rightmostPanel { graph, filteredGroups, runs, concurrencyComparison } =
+rightmostPanel { graph, filteredGroups, runs, concurrencyComparison, selectedPage } =
     div []
         [ select [ onChange ChangeGraphType ] (List.map (renderGraphItem graph) validGraphs)
         , renderConcurrencySelector concurrencyComparison runs
         , renderGroups filteredGroups runs
         , h4 [] [ text "Pages" ]
-        , renderPageList runs
+        , renderPageList (extractSelectedPage selectedPage) runs
+        , div [ class "scrollFader" ] []
         ]
+
+
+extractSelectedPage : Maybe PageSelection -> String
+extractSelectedPage selection =
+    selection
+        |> Maybe.map (\(PageSelection page _) -> page)
+        |> Maybe.withDefault ""
 
 
 renderGraphItem : Title -> ( Title, Graph ) -> Html Msg
@@ -807,14 +981,18 @@ renderGroupItem filtered ( color, runGroup ) =
             ]
 
 
-renderPageList : List Run -> Html Msg
-renderPageList runs =
-    ul [] (List.map renderPageItem (uniquePages runs))
+renderPageList : String -> List Run -> Html Msg
+renderPageList selected runs =
+    ul [ class "view-plot--right__pages" ] (List.map (renderPageItem selected) (uniquePages runs))
 
 
-renderPageItem : String -> Html Msg
-renderPageItem page =
-    li [] [ text page ]
+renderPageItem : String -> String -> Html Msg
+renderPageItem selected page =
+    let
+        classes =
+            [ ( "selected", selected == page ) ]
+    in
+        li [] [ a [ classList classes, onClick (PageNameClicked page) ] [ text page ] ]
 
 
 uniquePages : List Run -> List String
@@ -826,54 +1004,79 @@ uniquePages runs =
         |> List.sort
 
 
-graphDesc : Title -> Maybe Graph
-graphDesc title =
+graphDefinition : Title -> Maybe Graph
+graphDefinition title =
     validGraphs
         |> List.filter (\( t, _ ) -> title == t)
         |> List.map Tuple.second
         |> List.head
 
 
-plotRuns : Model -> Html Msg
-plotRuns { hovered, runs, graph, filteredGroups, concurrencyComparison } =
-    case graphDesc graph of
-        Just (Scatter xLegend yLegend xGetter yGetter) ->
-            basicSeries hovered
-                xLegend
-                yLegend
-                [ scatterPlot xGetter yGetter hovered ]
-                (assignColors runs |> filterGroups filteredGroups)
-
-        Just (Timeline yLegend yGetter) ->
-            let
-                level =
-                    Maybe.withDefault 0 concurrencyComparison
-
-                runData =
-                    runs
-                        |> List.filter (\r -> r.run.concurrency == level)
-
-                dates =
-                    runData
-                        |> List.map (.run >> .created >> Date.toTime)
-                        |> EList.unique
-                        |> List.sort
-                        |> List.indexedMap (\index date -> ( date, toFloat index ))
-                        |> Dict.fromList
-
-                dateGetter d =
-                    dates
-                        |> Dict.get (Date.toTime (d.run.created))
-                        |> Maybe.withDefault 0
-            in
-                basicSeries hovered
-                    ""
-                    yLegend
-                    [ linePlot dateGetter yGetter hovered ]
-                    (assignColors runData)
-
+assembleRunData : List Run -> Maybe PageSelection -> List Run
+assembleRunData runs selectedPage =
+    case selectedPage of
         Nothing ->
-            Debug.crash ("got invalid graph title: " ++ graph)
+            runs
+
+        Just (PageSelection _ pageStats) ->
+            runs
+                |> List.filterMap
+                    (\r ->
+                        case Dict.get r.run.id pageStats of
+                            Nothing ->
+                                Nothing
+
+                            Just { stats } ->
+                                -- Replace the run stats with the page stats
+                                Just { r | stats = stats }
+                    )
+
+
+plotRuns : Model -> Html Msg
+plotRuns { hovered, runs, graph, filteredGroups, concurrencyComparison, selectedPage } =
+    let
+        selectRunData runList =
+            assembleRunData runList selectedPage
+    in
+        case graphDefinition graph of
+            Just (Scatter xLegend yLegend xGetter yGetter) ->
+                basicSeries hovered
+                    xLegend
+                    yLegend
+                    [ scatterPlot xGetter yGetter hovered ]
+                    (runs |> selectRunData |> assignColors |> filterGroups filteredGroups)
+
+            Just (Timeline yLegend yGetter) ->
+                let
+                    level =
+                        Maybe.withDefault 0 concurrencyComparison
+
+                    runData =
+                        runs
+                            |> List.filter (\r -> r.run.concurrency == level)
+                            |> selectRunData
+
+                    dates =
+                        runData
+                            |> List.map (.run >> .created >> Date.toTime)
+                            |> EList.unique
+                            |> List.sort
+                            |> List.indexedMap (\index date -> ( date, toFloat index ))
+                            |> Dict.fromList
+
+                    dateGetter d =
+                        dates
+                            |> Dict.get (Date.toTime (d.run.created))
+                            |> Maybe.withDefault 0
+                in
+                    basicSeries hovered
+                        ""
+                        yLegend
+                        [ linePlot dateGetter yGetter hovered ]
+                        (assignColors runData)
+
+            Nothing ->
+                Debug.crash ("got invalid graph title: " ++ graph)
 
 
 basicSeries :
@@ -1102,6 +1305,14 @@ decodeRun =
         |> Pipeline.required "pages" (Decode.list Decode.string)
         |> Pipeline.required "stats" decodeStats
         |> Pipeline.required "run" decodeRunInfo
+
+
+decodePage : Decode.Decoder Page
+decodePage =
+    Pipeline.decode Page
+        |> Pipeline.required "url" Decode.string
+        |> Pipeline.required "runId" Decode.int
+        |> Pipeline.custom decodeStats
 
 
 decodeStats : Decode.Decoder Stats

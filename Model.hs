@@ -192,7 +192,7 @@ findRunStats runIds = do
 
 findPageStats
   :: MonadIO m
-  => [Key Run] -> Text -> SqlReadT m [(Key Run, Page)]
+  => [Key Run] -> Text -> SqlReadT m [Page]
 findPageStats runIds url = do
   rows <-
     select $
@@ -215,7 +215,9 @@ findPageStats runIds url = do
         , coalesceDefault [avg_ (page ^. PageQuantile95)] (val 0))
   return (fmap buildPage rows)
   where
-    buildPage fields = set11Fields (Page Nothing (Just url)) fields
+    buildPage fields = setRunId . buildIntermediate $ fields
+    buildIntermediate fields = set11Fields (Page Nothing (Just url)) fields
+    setRunId (rId, page) = page {pageRunId = Just rId}
 
 toKey :: Int -> Key Run
 toKey key = Sql.toSqlKey . fromIntegral $ key
@@ -326,7 +328,6 @@ instance FromJSON WreckerRun where
               [] -- The initial accumulator value
               allPages
       return WreckerRun {..}
-
 
 instance ToJSON a =>
          ToJSON (Entity a) where
