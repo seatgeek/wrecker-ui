@@ -16,7 +16,7 @@ import Round exposing (roundNum)
 import Dict exposing (Dict)
 import Tuple
 import List.Extra as EList
-import String.Extra exposing (leftOf, fromInt)
+import String.Extra exposing (leftOf, rightOfBack, fromInt, clean)
 
 
 {-| Bolilerplate: Wires the application together
@@ -945,15 +945,30 @@ renderGroups filteredGroups runs =
     let
         groups =
             runs
-                |> List.sortBy (.run >> .groupName)
                 |> assignColors
                 |> EList.uniqueBy Tuple.first
+                |> List.sortWith sortByGroupName
+                |> List.reverse
     in
         ul []
             (List.map
                 (renderGroupItem filteredGroups)
                 groups
             )
+
+
+sortByGroupName : ( String, Run ) -> ( String, Run ) -> Order
+sortByGroupName ( _, aRun ) ( _, bRun ) =
+    let
+        extractDate r =
+            r.run.groupName
+                |> rightOfBack "- "
+                |> clean
+                |> Date.fromString
+                |> Result.withDefault (Date.fromTime 0)
+                |> Date.toTime
+    in
+        compare (extractDate aRun) (extractDate bRun)
 
 
 renderGroupItem : List String -> GraphData -> Html Msg
@@ -1012,8 +1027,8 @@ graphDefinition title =
         |> List.head
 
 
-assembleRunData : List Run -> Maybe PageSelection -> List Run
-assembleRunData runs selectedPage =
+assembleRunData : Maybe PageSelection -> List GraphData -> List GraphData
+assembleRunData selectedPage runs =
     case selectedPage of
         Nothing ->
             runs
@@ -1021,22 +1036,22 @@ assembleRunData runs selectedPage =
         Just (PageSelection _ pageStats) ->
             runs
                 |> List.filterMap
-                    (\r ->
+                    (\( color, r ) ->
                         case Dict.get r.run.id pageStats of
                             Nothing ->
                                 Nothing
 
                             Just { stats } ->
                                 -- Replace the run stats with the page stats
-                                Just { r | stats = stats }
+                                Just ( color, { r | stats = stats } )
                     )
 
 
 plotRuns : Model -> Html Msg
 plotRuns { hovered, runs, graph, filteredGroups, concurrencyComparison, selectedPage } =
     let
-        selectRunData runList =
-            assembleRunData runList selectedPage
+        selectRunData graphData =
+            assembleRunData selectedPage graphData
     in
         case graphDefinition graph of
             Just (Scatter xLegend yLegend xGetter yGetter) ->
@@ -1044,7 +1059,7 @@ plotRuns { hovered, runs, graph, filteredGroups, concurrencyComparison, selected
                     xLegend
                     yLegend
                     [ scatterPlot xGetter yGetter hovered ]
-                    (runs |> selectRunData |> assignColors |> filterGroups filteredGroups)
+                    (runs |> assignColors |> selectRunData |> filterGroups filteredGroups)
 
             Just (Timeline yLegend yGetter) ->
                 let
@@ -1054,7 +1069,6 @@ plotRuns { hovered, runs, graph, filteredGroups, concurrencyComparison, selected
                     runData =
                         runs
                             |> List.filter (\r -> r.run.concurrency == level)
-                            |> selectRunData
 
                     dates =
                         runData
@@ -1073,7 +1087,7 @@ plotRuns { hovered, runs, graph, filteredGroups, concurrencyComparison, selected
                         ""
                         yLegend
                         [ linePlot dateGetter yGetter hovered ]
-                        (assignColors runData)
+                        (runData |> assignColors |> selectRunData)
 
             Nothing ->
                 Debug.crash ("got invalid graph title: " ++ graph)
