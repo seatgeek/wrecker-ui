@@ -31,6 +31,7 @@ data ScheduleOptions = ScheduleOptions
   , cStart :: Int
   , cEnd :: Int
   , sStep :: Int
+  , time :: Maybe Int
   } deriving (Show)
 
 type RunSchedule = STM.TVar (Map Text RunStatus)
@@ -100,8 +101,9 @@ addToSchedule db name schedule@ScheduleOptions {..} testsList = do
   result <- STM.atomically changeList
   case result of
     Right True -> do
-      let steps = createSteps
-      job <- async (Wrecker.escalate db gName name steps)
+      let steps = Wrecker.Concurrency <$> createSteps
+      let secs = Wrecker.Seconds <$> time
+      job <- async (Wrecker.escalate db gName name secs steps)
       STM.atomically (updateStatus (Running $ Just job))
       return result
     _ -> return result

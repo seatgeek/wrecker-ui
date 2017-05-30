@@ -127,6 +127,7 @@ type alias SchedulerOptions =
     , concurrencyStart : Int
     , concurrencyEnd : Int
     , stepSize : Int
+    , runTime : Maybe Int
     }
 
 
@@ -139,6 +140,7 @@ type SchedulerField
     | ConcurrencyStart
     | ConcurrencyEnd
     | StepSize
+    | RunTime
 
 
 {-| Statistics can be explored down to a per-page level. This type represents the
@@ -497,7 +499,7 @@ update msg model =
                 schedulerOptions =
                     model.schedulerOptions
                         |> Maybe.map (\s -> { s | testTitle = title })
-                        |> Maybe.withDefault (SchedulerOptions title "" 10 300 10)
+                        |> Maybe.withDefault (SchedulerOptions title "" 10 300 10 Nothing)
             in
                 ( { model | schedulerOptions = Just schedulerOptions }, Cmd.none )
 
@@ -519,6 +521,9 @@ update msg model =
 
                         StepSize ->
                             { opts | stepSize = Result.withDefault opts.stepSize (String.toInt value) }
+
+                        RunTime ->
+                            { opts | runTime = String.toInt value |> Result.toMaybe }
 
                 schedulerOptions =
                     model.schedulerOptions
@@ -623,6 +628,7 @@ postTestSchedule options =
                 , Http.stringPart "concurrencyStart" (fromInt options.concurrencyStart)
                 , Http.stringPart "concurrencyEnd" (fromInt options.concurrencyEnd)
                 , Http.stringPart "stepSize" (fromInt options.stepSize)
+                , Http.stringPart "runTime" (options.runTime |> Maybe.map fromInt |> Maybe.withDefault "")
                 ]
     in
         Http.post "/test-list" body Decode.value
@@ -795,27 +801,37 @@ buildTestItems selected ( title, status ) =
 
 schedulerOptions : SchedulerOptions -> Html Msg
 schedulerOptions options =
-    div [ class "view-plot--right__concurrency" ]
-        [ label []
-            [ span [] [ text "Test Annotation" ]
-            , input [ onInput (SchedulerFieldChanged AnnotationTitle), placeholder "E.g. Migrated to PHP 7" ] []
+    let
+        duration =
+            options.runTime
+                |> Maybe.map fromInt
+                |> Maybe.withDefault ""
+    in
+        div [ class "view-plot--right__concurrency" ]
+            [ label []
+                [ span [] [ text "Test Annotation" ]
+                , input [ onInput (SchedulerFieldChanged AnnotationTitle), placeholder "E.g. Migrated to PHP 7" ] []
+                ]
+            , label []
+                [ span [] [ text "Concurrency Start" ]
+                , input [ onInput (SchedulerFieldChanged ConcurrencyStart), type_ "number", value (fromInt options.concurrencyStart) ] []
+                ]
+            , label []
+                [ span [] [ text "Concurrency Target" ]
+                , input [ onInput (SchedulerFieldChanged ConcurrencyEnd), type_ "number", value (fromInt options.concurrencyEnd) ] []
+                ]
+            , label []
+                [ span [] [ text "Step Size" ]
+                , input [ onInput (SchedulerFieldChanged StepSize), type_ "number", value (fromInt options.stepSize) ] []
+                ]
+            , label []
+                [ span [] [ text "Duration (secs)" ]
+                , input [ onInput (SchedulerFieldChanged RunTime), type_ "number", value duration ] []
+                ]
+            , label []
+                [ button [ onClick ScheduleTestClicked ] [ text "Schedule Test" ]
+                ]
             ]
-        , label []
-            [ span [] [ text "Concurrency Start" ]
-            , input [ onInput (SchedulerFieldChanged ConcurrencyStart), type_ "number", value (fromInt options.concurrencyStart) ] []
-            ]
-        , label []
-            [ span [] [ text "Concurrency Target" ]
-            , input [ onInput (SchedulerFieldChanged ConcurrencyEnd), type_ "number", value (fromInt options.concurrencyEnd) ] []
-            ]
-        , label []
-            [ span [] [ text "Step Size" ]
-            , input [ onInput (SchedulerFieldChanged StepSize), type_ "number", value (fromInt options.stepSize) ] []
-            ]
-        , label []
-            [ button [ onClick ScheduleTestClicked ] [ text "Schedule Test" ]
-            ]
-        ]
 
 
 {-| Renders the left panel (where the search button and the list of runs is)

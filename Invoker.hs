@@ -6,6 +6,7 @@ import Control.Exception (try, SomeException)
 import Control.Monad.Loops (andM)
 import Data.Aeson (eitherDecodeStrict)
 import qualified Data.ByteString as BS
+import Data.Maybe (fromMaybe)
 import Data.Monoid ((<>))
 import Data.Text (Text, unpack, pack)
 import Data.Time.Clock (getCurrentTime)
@@ -17,30 +18,37 @@ import Model
 import System.IO.Temp (withSystemTempFile)
 import System.Process (callProcess, shell, readCreateProcess)
 
+newtype Concurrency =
+  Concurrency Int
+
+newtype Seconds =
+  Seconds Int
+
 escalateAll :: Database -> Text -> IO ()
 escalateAll db gName = do
   titles <- listGroups
   now <- getCurrentTime
-  let jobs = [(pack t, c) | t <- titles, c <- tail [0,10 .. 300]]
+  let jobs = [(pack t, Concurrency c) | t <- titles, c <- tail [0,10 .. 300]]
       fTime = pack . formatISO8601 $ now
       groupName = gName <> " - " <> fTime
       runner = record db groupName
-  _ <- andM $ fmap (\(title, conc) -> runner title conc) jobs
+  _ <- andM $ fmap (\(title, conc) -> runner title Nothing conc) jobs
   return ()
 
-escalate :: Database -> Text -> Text -> [Int] -> IO ()
-escalate db gName title steps = do
+escalate :: Database -> Text -> Text -> Maybe Seconds -> [Concurrency] -> IO ()
+escalate db gName title seconds steps = do
   now <- getCurrentTime
   let fTime = pack . formatISO8601 $ now
       groupName = gName <> " - " <> fTime
-      runner = record db groupName title
+      runner = record db groupName title seconds
   _ <- andM (fmap runner steps)
   return ()
 
-record :: Database -> Text -> Text -> Int -> IO Bool
-record db gName title conc = do
+record :: Database -> Text -> Text -> Maybe Seconds -> Concurrency -> IO Bool
+record db gName title seconds conc@(Concurrency concurrency) = do
   now <- getCurrentTime
-  result <- wrecker title conc
+  let secs = fromMaybe (Seconds 10) seconds
+  result <- wrecker title conc secs
   case result of
     Left err -> do
       putStrLn "Got an error when processing wrecker results:"
@@ -50,7 +58,7 @@ record db gName title conc = do
       if isUnAcceptable run
         then return False
         else runDbAction db $ do
-               runId <- insert $ Run title gName conc now
+               runId <- insert $ Run title gName concurrency now
                storeRunResults runId run
                return True
   where
@@ -61,8 +69,8 @@ record db gName title conc = do
       (fromIntegral rollupHits) >
       (0.01 :: Double)
 
-wrecker :: Text -> Int -> IO (Either String WreckerRun)
-wrecker title conc = do
+wrecker :: Text -> Concurrency -> Seconds -> IO (Either String WreckerRun)
+wrecker title (Concurrency conc) (Seconds secs) = do
   res <- try runScript
   case res :: Either SomeException (Either String WreckerRun) of
     Left err -> return (Left (show err))
@@ -78,6 +86,8 @@ wrecker title conc = do
           , "LevelInfo"
           , "--match"
           , unpack title
+          , "--run-timed"
+          , show secs
           , "--output-path"
           , file
           ]

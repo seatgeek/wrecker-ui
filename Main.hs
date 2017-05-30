@@ -249,11 +249,12 @@ scheduleTest db testsList = do
   cStart <- readEither <$> param "concurrencyStart"
   cEnd <- readEither <$> param "concurrencyEnd"
   sSize <- readEither <$> param "stepSize"
+  time <- Right . readMaybe <$> param "runTime" -- Read into a Maybe, then wrap with Right
   --
   -- The lazy way of checking for conversion errors
   -- We "unpack" the "Right" value from each var. If any "Left" is found
   -- The operation is aborted and the whole subroutine retuns "Left"
-  let allParams = (Scheduler.ScheduleOptions groupName) <$> cStart <*> cEnd <*> sSize
+  let allParams = (Scheduler.ScheduleOptions groupName) <$> cStart <*> cEnd <*> sSize <*> time
   case allParams of
     Left err -> handleError err
     Right schedule -> do
