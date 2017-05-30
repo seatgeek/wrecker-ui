@@ -55,8 +55,11 @@ record db gName title conc = do
                return True
   where
     isUnAcceptable :: WreckerRun -> Bool
+    -- | A run is not acceptable if more than 1% of the hits were errors
     isUnAcceptable WreckerRun {rollup = Rollup {..}} =
-      rollupUserErrorHits + rollupServerErrorHits + rollupFailedHits > 0
+      (fromIntegral (rollupUserErrorHits + rollupServerErrorHits + rollupFailedHits)) /
+      (fromIntegral rollupHits) >
+      (0.01 :: Double)
 
 wrecker :: Text -> Int -> IO (Either String WreckerRun)
 wrecker title conc = do
@@ -69,7 +72,15 @@ wrecker title conc = do
       withSystemTempFile "wrecker.results" $ \file handle -> do
         callProcess
           "sg-wrecker"
-          ["--concurrency", show conc,"--log-level", "LevelInfo", "--match", unpack title, "--output-path", file]
+          [ "--concurrency"
+          , show conc
+          , "--log-level"
+          , "LevelInfo"
+          , "--match"
+          , unpack title
+          , "--output-path"
+          , file
+          ]
         contents <- BS.hGetContents handle
         return (eitherDecodeStrict contents)
 
