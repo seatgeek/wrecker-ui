@@ -22,7 +22,7 @@ pull-linux-image:
 
 elm-build:
 	elm-package install --yes
-	elm-make UI.elm --output assets/app.js
+	elm-make UI/UI.elm --output assets/app.js
 
 package-linux: pull-linux-image elm-build wrecker-ui-linux/wrecker-ui
 	cp -a assets wrecker-ui-linux
