@@ -85,6 +85,7 @@ Dependencies:
 
 - [Haskell stack](https://docs.haskellstack.org/en/stable/README/#how-to-install)
 - [Elm 0.18](https://guide.elm-lang.org/install.html)
+- [Elm Install](https://github.com/gdotdesign/elm-github-install)
 
 Install the `stack` tool from the link above. Then `cd` to the root folder of this repo and execute:
 
@@ -94,6 +95,13 @@ stack install
 ```
 
 If it is the first time, it will take *a lot* of time. Don't worry, it's only once you need to pay this price.
+
+Currently, we require a fork of an official Elm package. Therefore, we are unable to use `elm-package` to install
+dependencies. Instead, use `elm-install`. just executed it to the the Elm dependencies:
+
+```sh
+elm-install
+```
 
 The UI is built using the `elm-make` command
 
@@ -113,7 +121,7 @@ npm install -g elm-live
 Then you can run
 
 ```sh
-elm-live UI.elm --dir=assets/ --output=assets/app.js
+elm-live UI/UI.elm --dir=assets/ --output=assets/app.js
 wrecker-ui
 ```
 

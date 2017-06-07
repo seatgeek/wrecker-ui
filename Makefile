@@ -21,7 +21,7 @@ pull-linux-image:
 	docker pull $(DOCKER_LINUX_IMAGE)
 
 elm-build:
-	elm-package install --yes
+	elm-install
 	elm-make UI/UI.elm --output assets/app.js
 
 package-linux: pull-linux-image elm-build wrecker-ui-linux/wrecker-ui
