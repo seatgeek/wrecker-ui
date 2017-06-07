@@ -9,6 +9,8 @@ import Util exposing (natSort)
 import Http
 import Json.Decode as Decode
 import Json.Decode.Pipeline as Pipeline
+import Return exposing (command, andThen, mapCmd)
+import Util exposing (return)
 
 
 {-| Wrecker-UI is able to schedule new tests from the iterface. Test Runs can
@@ -53,11 +55,93 @@ type SchedulerField
     | RunTime
 
 
-type alias Config msg =
-    { onSelectItem : String -> msg
-    , onFieldChange : SchedulerField -> String -> msg
-    , onSubmit : msg
+type Msg
+    = TestTitleClicked String
+    | LoadTestSchedule (Result Http.Error TestList)
+    | SchedulerFieldChanged SchedulerField String
+    | ScheduleTestClicked
+    | ScheduleTestSent (Result Http.Error Decode.Value)
+
+
+type alias Model =
+    { testList : TestList
+    , schedulerOptions : Maybe SchedulerOptions
     }
+
+
+defaultModel : Model
+defaultModel =
+    { testList = TestList Dict.empty
+    , schedulerOptions = Nothing
+    }
+
+
+init : ( Model, Cmd Msg )
+init =
+    defaultModel
+        |> return
+        |> command (Http.send LoadTestSchedule getTestList)
+
+
+update : Msg -> Model -> ( Model, Cmd Msg )
+update msg model =
+    case msg of
+        LoadTestSchedule (Err error) ->
+            -- If there was an error loading the test schedule, we just log it in the console
+            ( Debug.log (toString error) model, Cmd.none )
+
+        LoadTestSchedule (Ok tests) ->
+            -- After getting the ajax results for the test schedule we need do nothing else but store them
+            return { model | testList = tests }
+
+        TestTitleClicked title ->
+            -- In the Scheduling view, when the user clicks a test title, we populate the default
+            -- scheduling options to show in the form.
+            let
+                schedulerOptions =
+                    model.schedulerOptions
+                        |> Maybe.map (\s -> { s | testTitle = title })
+                        |> Maybe.withDefault (defaultOptions title)
+            in
+                return { model | schedulerOptions = Just schedulerOptions }
+
+        SchedulerFieldChanged field value ->
+            -- This is a catch-all for any changes done to the fields in the scheduling options form.
+            -- depending on the value for the field parameter, we update a different field in the scheduling
+            -- options record.
+            let
+                schedulerOptions =
+                    model.schedulerOptions
+                        |> Maybe.map (updateOptions field value)
+            in
+                return { model | schedulerOptions = schedulerOptions }
+
+        ScheduleTestClicked ->
+            -- Once the schedule test button is clicked, we take the scheduling options record and post it
+            -- using a HTTP request, so that the test is run in the server.
+            let
+                effect =
+                    model.schedulerOptions
+                        |> Maybe.map (\o -> Http.send ScheduleTestSent (postTestSchedule o))
+                        |> Maybe.withDefault Cmd.none
+            in
+                ( model, effect )
+
+        ScheduleTestSent (Err err) ->
+            -- If we got an error when sending the test to the scheduler, we log the error, but also
+            -- hide the scheduler form.
+            let
+                _ =
+                    Debug.log "ScheduleTestSent" err
+            in
+                return { model | schedulerOptions = Nothing }
+
+        ScheduleTestSent _ ->
+            -- If the test is created successfully in the scheduler, we re-load the scheduler information
+            -- from the server in order to reflect the new status in the list of tests.
+            { model | schedulerOptions = Nothing }
+                |> return
+                |> command (Http.send LoadTestSchedule getTestList)
 
 
 {-| Returns a Request object that can be used to load the list of tests titles. This is
@@ -66,6 +150,22 @@ used for displaying the list of runs that can be selected when scheduling a Run.
 getTestList : Http.Request TestList
 getTestList =
     Http.get "/test-list" decodeTestList
+
+
+postTestSchedule : SchedulerOptions -> Http.Request Decode.Value
+postTestSchedule options =
+    let
+        body =
+            Http.multipartBody
+                [ Http.stringPart "testTitle" options.testTitle
+                , Http.stringPart "groupName" options.annotationTitle
+                , Http.stringPart "concurrencyStart" (fromInt options.concurrencyStart)
+                , Http.stringPart "concurrencyEnd" (fromInt options.concurrencyEnd)
+                , Http.stringPart "stepSize" (fromInt options.stepSize)
+                , Http.stringPart "runTime" (options.runTime |> Maybe.map fromInt |> Maybe.withDefault "")
+                ]
+    in
+        Http.post "/test-list" body Decode.value
 
 
 defaultOptions : String -> SchedulerOptions
@@ -92,31 +192,31 @@ updateOptions field value opts =
             { opts | runTime = String.toInt value |> Result.toMaybe }
 
 
-view : Config msg -> TestList -> Maybe SchedulerOptions -> Html msg
-view config (TestList list) options =
+view : Model -> Html Msg
+view { testList, schedulerOptions } =
     let
-        testNames =
+        testNames (TestList list) =
             list
                 |> Dict.toList
                 |> List.sortWith (\( a, _ ) ( b, _ ) -> natSort a b)
 
         active =
-            options
+            schedulerOptions
                 |> Maybe.map .testTitle
                 |> Maybe.withDefault ""
     in
         div [ class "view-plot view-plot__closed" ]
             [ div [ class "view-plot--left" ]
                 [ ul []
-                    (List.map (buildTestItems config.onSelectItem active) testNames)
+                    (List.map (buildTestItems TestTitleClicked active) (testNames testList))
                 ]
             , div [ class "view-plot--right" ]
-                [ case options of
+                [ case schedulerOptions of
                     Nothing ->
                         text ""
 
                     Just opts ->
-                        schedulerOptions config.onFieldChange config.onSubmit opts
+                        renderOptions opts
                 ]
             ]
 
@@ -141,8 +241,8 @@ buildTestItems clickMsg selected ( title, status ) =
             ]
 
 
-schedulerOptions : (SchedulerField -> String -> msg) -> msg -> SchedulerOptions -> Html msg
-schedulerOptions fieldMsg submitMsg options =
+renderOptions : SchedulerOptions -> Html Msg
+renderOptions options =
     let
         duration =
             options.runTime
@@ -152,26 +252,26 @@ schedulerOptions fieldMsg submitMsg options =
         div [ class "view-plot--right__concurrency" ]
             [ label []
                 [ span [] [ text "Test Annotation" ]
-                , input [ onInput (fieldMsg AnnotationTitle), placeholder "E.g. Migrated to PHP 7" ] []
+                , input [ onInput (SchedulerFieldChanged AnnotationTitle), placeholder "E.g. Migrated to PHP 7" ] []
                 ]
             , label []
                 [ span [] [ text "Concurrency Start" ]
-                , input [ onInput (fieldMsg ConcurrencyStart), type_ "number", value (fromInt options.concurrencyStart) ] []
+                , input [ onInput (SchedulerFieldChanged ConcurrencyStart), type_ "number", value (fromInt options.concurrencyStart) ] []
                 ]
             , label []
                 [ span [] [ text "Concurrency Target" ]
-                , input [ onInput (fieldMsg ConcurrencyEnd), type_ "number", value (fromInt options.concurrencyEnd) ] []
+                , input [ onInput (SchedulerFieldChanged ConcurrencyEnd), type_ "number", value (fromInt options.concurrencyEnd) ] []
                 ]
             , label []
                 [ span [] [ text "Step Size" ]
-                , input [ onInput (fieldMsg StepSize), type_ "number", value (fromInt options.stepSize) ] []
+                , input [ onInput (SchedulerFieldChanged StepSize), type_ "number", value (fromInt options.stepSize) ] []
                 ]
             , label []
                 [ span [] [ text "Duration (secs)" ]
-                , input [ onInput (fieldMsg RunTime), type_ "number", value duration ] []
+                , input [ onInput (SchedulerFieldChanged RunTime), type_ "number", value duration ] []
                 ]
             , label []
-                [ button [ onClick submitMsg ] [ text "Schedule Test" ]
+                [ button [ onClick ScheduleTestClicked ] [ text "Schedule Test" ]
                 ]
             ]
 

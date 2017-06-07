@@ -17,7 +17,7 @@ import Scheduler exposing (SchedulerOptions)
 import String.Extra exposing (leftOf, rightOfBack, fromInt, clean)
 import Task
 import Tuple
-import Util exposing (natSort)
+import Util exposing (natSort, return)
 
 
 {-| Bolilerplate: Wires the application together
@@ -30,11 +30,6 @@ main =
         , update = update
         , subscriptions = always Sub.none
         }
-
-
-return : model -> Return.Return msg model
-return =
-    Return.singleton
 
 
 
@@ -72,9 +67,8 @@ type alias Model =
     , filteredGroups : List String
     , concurrencyComparison : Maybe Int
     , selectedPage : Maybe PageSelection
-    , testList : Scheduler.TestList
     , currentScreen : Screen
-    , schedulerOptions : Maybe SchedulerOptions
+    , schedulerState : Scheduler.Model
     }
 
 
@@ -84,6 +78,9 @@ the applicaiton starts. That is, loading the list of runs from the server.
 init : Location -> ( Model, Cmd Msg )
 init location =
     let
+        ( schedulerModel, scheduleInit ) =
+            Scheduler.init
+
         initialReturn =
             setRoute (Router.fromLocation location)
                 { runTitles = []
@@ -94,14 +91,13 @@ init location =
                 , filteredGroups = []
                 , selectedPage = Nothing
                 , concurrencyComparison = Nothing
-                , testList = Scheduler.TestList Dict.empty
                 , currentScreen = PlotScreen
-                , schedulerOptions = Nothing
+                , schedulerState = schedulerModel
                 }
     in
         initialReturn
             |> command (Http.send LoadRunTitles (getRuns ""))
-            |> command (Http.send LoadTestSchedule Scheduler.getTestList)
+            |> command (Cmd.map SchedulerMsg scheduleInit)
 
 
 {-| Contains a list of all the possible actions that can be executed within the
@@ -122,11 +118,7 @@ type Msg
     | PageNameClicked String
     | ChangeConcurrencyComparison Int
     | ChangeScreen Screen
-    | TestTitleClicked String
-    | LoadTestSchedule (Result Http.Error Scheduler.TestList)
-    | SchedulerFieldChanged Scheduler.SchedulerField String
-    | ScheduleTestClicked
-    | ScheduleTestSent (Result Http.Error Decode.Value)
+    | SchedulerMsg Scheduler.Msg
 
 
 
@@ -227,14 +219,6 @@ update msg model =
                 |> setRuns runs
                 |> return
 
-        LoadTestSchedule (Err error) ->
-            -- If there was an error loading the test schedule, we just log it in the console
-            debugError model error
-
-        LoadTestSchedule (Ok tests) ->
-            -- After getting the ajax results for the test schedule we need do nothing else but store them
-            return { model | testList = tests }
-
         GraphMsg gMsg ->
             let
                 ( m, c ) =
@@ -301,54 +285,12 @@ update msg model =
                 |> return
                 |> andThen updateTheUrl
 
-        TestTitleClicked title ->
-            -- In the Scheduling view, when the user clicks a test title, we populate the default
-            -- scheduling options to show in the form.
+        SchedulerMsg sMsg ->
             let
-                schedulerOptions =
-                    model.schedulerOptions
-                        |> Maybe.map (\s -> { s | testTitle = title })
-                        |> Maybe.withDefault (Scheduler.defaultOptions title)
+                ( m, c ) =
+                    Scheduler.update sMsg model.schedulerState
             in
-                return { model | schedulerOptions = Just schedulerOptions }
-
-        SchedulerFieldChanged field value ->
-            -- This is a catch-all for any changes done to the fields in the scheduling options form.
-            -- depending on the value for the field parameter, we update a different field in the scheduling
-            -- options record.
-            let
-                schedulerOptions =
-                    model.schedulerOptions
-                        |> Maybe.map (Scheduler.updateOptions field value)
-            in
-                return { model | schedulerOptions = schedulerOptions }
-
-        ScheduleTestClicked ->
-            -- Once the schedule test button is clicked, we take the scheduling options record and post it
-            -- using a HTTP request, so that the test is run in the server.
-            let
-                effect =
-                    model.schedulerOptions
-                        |> Maybe.map (\o -> Http.send ScheduleTestSent (postTestSchedule o))
-                        |> Maybe.withDefault Cmd.none
-            in
-                ( model, effect )
-
-        ScheduleTestSent (Err err) ->
-            -- If we got an error when sending the test to the scheduler, we log the error, but also
-            -- hide the scheduler form.
-            let
-                _ =
-                    Debug.log "ScheduleTestSent" err
-            in
-                return { model | schedulerOptions = Nothing }
-
-        ScheduleTestSent _ ->
-            -- If the test is created successfully in the scheduler, we re-load the scheduler information
-            -- from the server in order to reflect the new status in the list of tests.
-            { model | schedulerOptions = Nothing }
-                |> return
-                |> command (Http.send LoadTestSchedule Scheduler.getTestList)
+                ( { model | schedulerState = m }, Cmd.map SchedulerMsg c )
 
 
 setRoute : Maybe Router.Route -> Model -> ( Model, Cmd Msg )
@@ -385,7 +327,7 @@ changeScreen screen model =
         effect =
             case screen of
                 ScheduleRunScreen ->
-                    Http.send LoadTestSchedule Scheduler.getTestList
+                    Cmd.map SchedulerMsg <| Tuple.second Scheduler.init
 
                 PlotScreen ->
                     Http.send LoadRunTitles (getRuns "")
@@ -575,22 +517,6 @@ getPageStats ids page =
             (Decode.list decodePage)
 
 
-postTestSchedule : SchedulerOptions -> Http.Request Decode.Value
-postTestSchedule options =
-    let
-        body =
-            Http.multipartBody
-                [ Http.stringPart "testTitle" options.testTitle
-                , Http.stringPart "groupName" options.annotationTitle
-                , Http.stringPart "concurrencyStart" (fromInt options.concurrencyStart)
-                , Http.stringPart "concurrencyEnd" (fromInt options.concurrencyEnd)
-                , Http.stringPart "stepSize" (fromInt options.stepSize)
-                , Http.stringPart "runTime" (options.runTime |> Maybe.map fromInt |> Maybe.withDefault "")
-                ]
-    in
-        Http.post "/test-list" body Decode.value
-
-
 
 -----------------------
 -- Helper functions
@@ -623,14 +549,6 @@ extractTitles runs =
 -----------------------------------
 
 
-schedulerViewConfig : Scheduler.Config Msg
-schedulerViewConfig =
-    { onSelectItem = TestTitleClicked
-    , onFieldChange = SchedulerFieldChanged
-    , onSubmit = ScheduleTestClicked
-    }
-
-
 {-| Takes a model state and renders all the HTML in the page out of it
 -}
 view : Model -> Html Msg
@@ -644,7 +562,8 @@ view model =
                         rightPlotPanel model
 
                     ScheduleRunScreen ->
-                        Scheduler.view schedulerViewConfig model.testList model.schedulerOptions
+                        Html.map SchedulerMsg <|
+                            Scheduler.view model.schedulerState
                 ]
             ]
         ]

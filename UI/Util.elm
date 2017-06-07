@@ -1,6 +1,12 @@
 module Util exposing (..)
 
 import String.Extra exposing (leftOf)
+import Return
+
+
+return : model -> Return.Return msg model
+return =
+    Return.singleton
 
 
 natSort : String -> String -> Order
