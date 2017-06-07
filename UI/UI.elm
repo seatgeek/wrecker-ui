@@ -112,7 +112,6 @@ type Msg
     | SearchFieldUpdated String
     | SearchButtonClicked
     | LoadRunTitles (Result Http.Error (List RunInfo))
-    | LoadRunList (Result Http.Error (List RunInfo))
     | LoadRunStats (Result Http.Error (List Run))
     | LoadPageStats (Result Http.Error (List Page))
     | LoadFromLocation (Result Http.Error ( List Run, String, Maybe (List Page) ))
@@ -160,7 +159,7 @@ update msg model =
             -- results state and trigger a HTTP request to get the results.
             resetRunsState model
                 |> return
-                |> command (Http.send LoadRunList (getRuns model.searchField))
+                |> command (Http.send LoadRunStats (getManyRuns model.searchField))
 
         RunTitleClicked name ->
             -- Similarly to clicking the search button, when clicming on one of the test
@@ -170,7 +169,7 @@ update msg model =
                 |> updateSearchField name
                 |> resetRunsState
                 |> return
-                |> command (Http.send LoadRunList (getRuns name))
+                |> command (Http.send LoadRunStats (getManyRuns name))
                 |> andThen updateTheUrl
 
         LoadRunTitles (Err error) ->
@@ -179,17 +178,6 @@ update msg model =
 
         LoadRunTitles (Ok runs) ->
             return { model | runTitles = extractTitles runs }
-
-        LoadRunList (Err error) ->
-            -- If there was an error loading the list of tests, we just log it in the console
-            debugError model error
-
-        LoadRunList (Ok runs) ->
-            -- But if we could successfully load the run list, then we try to find all the stats
-            -- for such list immediately using a HTTP request
-            model
-                |> return
-                |> command (Http.send LoadRunStats (getManyRuns (List.map .id runs)))
 
         LoadRunStats (Err error) ->
             -- If there was an error loading the run stats, we just log it in the console
@@ -462,9 +450,8 @@ debugError model err =
 
 loadRunThenPage : Maybe String -> Maybe String -> Cmd Msg
 loadRunThenPage maybeTestName maybePageName =
-    getRuns (Maybe.withDefault "" maybeTestName)
+    getManyRuns (Maybe.withDefault "__" maybeTestName)
         |> Http.toTask
-        |> Task.andThen (\runInfos -> getManyRuns (List.map .id runInfos) |> Http.toTask)
         |> Task.andThen
             (\runs ->
                 case maybePageName of
@@ -561,15 +548,9 @@ getSingleRun id =
 
 {-| Returns a Request object that can be used to load a list of run statistics
 -}
-getManyRuns : List Int -> Http.Request (List Run)
-getManyRuns ids =
-    let
-        --Convert the list of ids into a comma separated string of numbers
-        idsQ =
-            ids
-                |> List.foldl (\id acc -> acc ++ fromInt id ++ ",") ""
-    in
-        Http.get ("/runs/rollup/?ids=" ++ idsQ) (Decode.list decodeRun)
+getManyRuns : String -> Http.Request (List Run)
+getManyRuns match =
+    Http.get ("/runs/rollup/?match=" ++ Http.encodeUri match) (Decode.list decodeRun)
 
 
 {-| Returns a Request object that can be used to load a list of page statistics

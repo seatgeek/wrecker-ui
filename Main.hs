@@ -1,6 +1,7 @@
 {-# LANGUAGE RecordWildCards, NamedFieldPuns, DeriveGeneric #-}
 
 import Control.Concurrent.Async (async, link)
+import Control.Monad (when)
 import Control.Monad.IO.Class (liftIO)
 import Control.Monad.IO.Class (MonadIO)
 import Data.Aeson hiding (json)
@@ -203,7 +204,7 @@ fetchRunStats runId = do
 
 getManyRuns :: Database -> ActionM ()
 getManyRuns db = do
-  allIds <- parseIdList
+  allIds <- idsOrMatch db
   case allIds of
     [] -> errorResponse "Invalid list of ids"
     _ -> do
@@ -226,7 +227,7 @@ getManyRuns db = do
 
 getPageStats :: Database -> ActionM ()
 getPageStats db = do
-  allIds <- parseIdList
+  allIds <- idsOrMatch db
   pageName <- param "name"
   page <- liftAndCatchIO (fetchPageStats allIds pageName)
   json page
@@ -278,11 +279,22 @@ optionalParam name = param name `rescue` (\_ -> return mempty)
 
 parseIdList :: ActionM [Int]
 parseIdList = do
-  longString <- param "ids"
+  longString <- optionalParam "ids"
   let idsList = fmap Text.unpack (Text.splitOn "," longString)
       parsedList = fmap readMaybe idsList
-  liftAndCatchIO $print idsList
   return (catMaybes parsedList)
+
+idsOrMatch :: Database -> ActionM [Int]
+idsOrMatch db = do
+  ids <- parseIdList
+  case ids of
+    [] -> idsFromMatch
+    _ -> return ids
+  where
+    idsFromMatch = do
+      match <- param "match"
+      runs <- liftAndCatchIO (runDbAction db $ findRunsByMatch match)
+      return (fmap (fromIntegral . Sql.fromSqlKey . P.entityKey) runs)
 
 toSqlKey :: Int -> Key Run
 toSqlKey = Sql.toSqlKey . fromIntegral
