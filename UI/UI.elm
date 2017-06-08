@@ -16,6 +16,7 @@ import Router
 import Scheduler exposing (SchedulerOptions)
 import String.Extra exposing (leftOf, rightOfBack, fromInt, clean)
 import Task
+import Time
 import Tuple
 import Util exposing (natSort, return)
 
@@ -28,7 +29,7 @@ main =
         { init = init
         , view = view
         , update = update
-        , subscriptions = always Sub.none
+        , subscriptions = subscriptions
         }
 
 
@@ -69,6 +70,7 @@ type alias Model =
     , selectedPage : Maybe PageSelection
     , currentScreen : Screen
     , schedulerState : Scheduler.Model
+    , pollForResults : Maybe String
     }
 
 
@@ -93,6 +95,7 @@ init location =
                 , concurrencyComparison = Nothing
                 , currentScreen = PlotScreen
                 , schedulerState = schedulerModel
+                , pollForResults = Nothing
                 }
     in
         initialReturn
@@ -119,12 +122,23 @@ type Msg
     | ChangeConcurrencyComparison Int
     | ChangeScreen Screen
     | SchedulerMsg Scheduler.Msg
+    | PollForResults String
 
 
 
 -----------------------------------
 -- Update Logic
 -----------------------------------
+
+
+subscriptions : Model -> Sub Msg
+subscriptions model =
+    case model.pollForResults of
+        Nothing ->
+            Sub.none
+
+        Just testName ->
+            Time.every (30 * Time.second) (\_ -> PollForResults testName)
 
 
 {-| Handles all the actions performed in the app and returns a pair with the mutated model
@@ -150,6 +164,7 @@ update msg model =
             -- When the search button is clicked, then we need to reset the previous
             -- results state and trigger a HTTP request to get the results.
             resetRunsState model
+                |> startPollingForResults model.searchField
                 |> return
                 |> command (Http.send LoadRunStats (getManyRuns model.searchField))
 
@@ -159,6 +174,7 @@ update msg model =
             -- HTTP request to fetch new results.
             model
                 |> updateSearchField name
+                |> startPollingForResults name
                 |> resetRunsState
                 |> return
                 |> command (Http.send LoadRunStats (getManyRuns name))
@@ -292,6 +308,14 @@ update msg model =
             in
                 ( { model | schedulerState = m }, Cmd.map SchedulerMsg c )
 
+        PollForResults name ->
+            return model
+                |> command
+                    (loadRunThenPage
+                        (Just name)
+                        (model.selectedPage |> Maybe.map (\(PageSelection n _) -> n))
+                    )
+
 
 setRoute : Maybe Router.Route -> Model -> ( Model, Cmd Msg )
 setRoute maybeRoute model =
@@ -306,13 +330,13 @@ setRoute maybeRoute model =
             changeScreen ScheduleRunScreen model
 
         Just (Router.SimplePlot plotIndex maybeTestName maybePageName) ->
-            model
+            { model | pollForResults = maybeTestName }
                 |> setGraphByIndex plotIndex
                 |> return
                 |> command (loadRunThenPage maybeTestName maybePageName)
 
         Just (Router.ComparisonPlot plotIndex level maybeTestName maybePageName) ->
-            { model | concurrencyComparison = Just level }
+            { model | concurrencyComparison = Just level, pollForResults = maybeTestName }
                 |> setGraphByIndex plotIndex
                 |> return
                 |> command (loadRunThenPage maybeTestName maybePageName)
@@ -379,6 +403,11 @@ setPageSelection page pages model =
                 |> Dict.fromList
     in
         { model | selectedPage = Just (PageSelection page indexed) }
+
+
+startPollingForResults : String -> Model -> Model
+startPollingForResults testName model =
+    { model | pollForResults = Just testName }
 
 
 debugError : Model -> a -> ( Model, Cmd msg )
