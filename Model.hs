@@ -17,7 +17,8 @@
 module Model where
 
 import Control.Monad.IO.Class (MonadIO)
-import Control.Monad.Logger (LoggingT(..), runStderrLoggingT)
+import Control.Monad.Logger
+       (LoggingT(..), runStderrLoggingT, runNoLoggingT, NoLoggingT(..))
 import Control.Monad.Trans.Control (MonadBaseControl(..))
 import Control.Monad.Trans.Reader (ReaderT)
 import qualified Control.Monad.Trans.Resource as R
@@ -112,8 +113,8 @@ data WreckerRun = WreckerRun
 -------------------------------------
 withDb
   :: DbMonad m
-  => DbBackend -> (Database -> LoggingT m a) -> m a
-withDb dbType = runStderrLoggingT . withPool 10
+  => DbBackend -> (Database -> NoLoggingT m a) -> m a
+withDb dbType = runNoLoggingT . withPool 10
   where
     withPool size =
       case dbType of
