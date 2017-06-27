@@ -114,6 +114,7 @@ type Msg
     | LoadRunStats (Result Http.Error (List Run))
     | LoadPageStats (Result Http.Error (List Page))
     | LoadFromLocation (Result Http.Error ( List Run, String, Maybe (List Page) ))
+    | RefreshRunStats (Result Http.Error ( List Run, String, Maybe (List Page) ))
     | GraphMsg Graph.Msg
     | RunTitleClicked String
     | ChangeGraphType String
@@ -235,6 +236,22 @@ update msg model =
                 |> setRuns runs
                 |> return
 
+        RefreshRunStats (Err error) ->
+            -- This is the case we are auto-refreshing stats currenlty in the viewport
+            -- ... but an error happened
+            debugError model error
+
+        RefreshRunStats (Ok ( runs, page, Just pages )) ->
+            -- This is the case when we want to re-construct the state from the browser URL
+            { model | runs = runs }
+                |> setPageSelection page pages
+                |> return
+
+        RefreshRunStats (Ok ( runs, _, Nothing )) ->
+            -- This is the case when we want to re-construct the state from the browser URL
+            { model | runs = runs }
+                |> return
+
         GraphMsg gMsg ->
             let
                 ( m, c ) =
@@ -312,6 +329,7 @@ update msg model =
             return model
                 |> command
                     (loadRunThenPage
+                        RefreshRunStats
                         (Just name)
                         (model.selectedPage |> Maybe.map (\(PageSelection n _) -> n))
                     )
@@ -333,13 +351,13 @@ setRoute maybeRoute model =
             { model | pollForResults = maybeTestName }
                 |> setGraphByIndex plotIndex
                 |> return
-                |> command (loadRunThenPage maybeTestName maybePageName)
+                |> command (loadRunThenPage LoadFromLocation maybeTestName maybePageName)
 
         Just (Router.ComparisonPlot plotIndex level maybeTestName maybePageName) ->
             { model | concurrencyComparison = Just level, pollForResults = maybeTestName }
                 |> setGraphByIndex plotIndex
                 |> return
-                |> command (loadRunThenPage maybeTestName maybePageName)
+                |> command (loadRunThenPage LoadFromLocation maybeTestName maybePageName)
 
 
 changeScreen : Screen -> Model -> ( Model, Cmd Msg )
@@ -419,8 +437,12 @@ debugError model err =
         ( model, Cmd.none )
 
 
-loadRunThenPage : Maybe String -> Maybe String -> Cmd Msg
-loadRunThenPage maybeTestName maybePageName =
+type alias ReloadAction =
+    Result Http.Error ( List Run, String, Maybe (List Page) ) -> Msg
+
+
+loadRunThenPage : ReloadAction -> Maybe String -> Maybe String -> Cmd Msg
+loadRunThenPage action maybeTestName maybePageName =
     getManyRuns (Maybe.withDefault "__" maybeTestName)
         |> Http.toTask
         |> Task.andThen
@@ -435,7 +457,7 @@ loadRunThenPage maybeTestName maybePageName =
                             |> Task.andThen (\stats -> Task.succeed (Ok ( runs, page, Just stats )))
             )
         |> Task.onError (\e -> Task.succeed (Err e))
-        |> Task.perform LoadFromLocation
+        |> Task.perform action
 
 
 

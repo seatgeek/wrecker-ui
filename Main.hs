@@ -212,7 +212,7 @@ getManyRuns db = do
       sendResult result
   where
     sendResult (results, pages)
-      -- I'm cheating there, by setting the same pages to all different runs. This should
+      -- I'm cheating here, by setting the same pages to all different runs. This should
       -- be fixed if we want insight into the individual pages for each run
      = do
       let buildObject (run, stats) = object ["run" .= run, "stats" .= stats, "pages" .= pages]

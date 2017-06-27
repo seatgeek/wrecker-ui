@@ -151,6 +151,7 @@ findRuns keys =
   select $
   from $ \r -> do
     where_ (r ^. RunId `in_` valList keys)
+    orderBy [asc (r ^. RunCreated)]
     return r
 
 findPagesList
@@ -174,6 +175,7 @@ findRunStats runIds = do
     from $ \rollup -> do
       where_ (rollup ^. RollupRunId `in_` justList (valList (runIds)))
       groupBy (rollup ^. RollupId, rollup ^. RollupRunId)
+      orderBy [asc (rollup ^. RollupRunId)]
       return
         ( coalesceDefault [rollup ^. RollupRunId] (val (toKey 0))
         , coalesceDefault [sum_ (rollup ^. RollupHits)] (val 0)

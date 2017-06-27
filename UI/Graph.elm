@@ -368,7 +368,9 @@ scatterPlot :
 scatterPlot xGetter yGetter hinting =
     { axis = rangeFrameAxis hinting (.y >> roundNum 3)
     , interpolation = None
-    , toDataPoints = List.map (rangeFrameHintDot xGetter yGetter hinting)
+    , toDataPoints =
+        List.sortBy (Tuple.second >> .run >> .created >> Date.toTime)
+            >> List.map (rangeFrameHintDot xGetter yGetter hinting)
     }
 
 
