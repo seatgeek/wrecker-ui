@@ -4,7 +4,7 @@ cabal-version: >= 1.8
 build-type:    Simple
 
 executable          wrecker-ui
-    hs-source-dirs: .
+    hs-source-dirs: src
     main-is:        Main.hs
     other-modules:  Model
                   , Invoker
