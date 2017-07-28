@@ -1,7 +1,6 @@
 {-# LANGUAGE RecordWildCards, NamedFieldPuns, DeriveGeneric #-}
 
 import Control.Concurrent.Async (async, link)
-import Control.Monad (when)
 import Control.Monad.IO.Class (liftIO)
 import Control.Monad.IO.Class (MonadIO)
 import Data.Aeson hiding (json)
@@ -167,7 +166,7 @@ getRun db = do
     case rId of
         Right runId -> do
             (stats, pages) <- liftAndCatchIO (runDbAction db $ fetchRunStats [runId])
-      -- if the list is empty, errorResponse, otherwise call sendResult with the first in the list
+            -- if the list is empty, errorResponse, otherwise call sendResult with the first in the list
             maybe (errorResponse errorTxt) (sendResult pages) (listToMaybe stats)
         Left err -> errorResponse err
   where
@@ -249,10 +248,10 @@ scheduleTest db testsList = do
     cEnd <- readEither <$> param "concurrencyEnd"
     sSize <- readEither <$> param "stepSize"
     time <- Right . readMaybe <$> param "runTime" -- Read into a Maybe, then wrap with Right
-  --
-  -- The lazy way of checking for conversion errors
-  -- We "unpack" the "Right" value from each var. If any "Left" is found
-  -- The operation is aborted and the whole subroutine retuns "Left"
+    --
+    -- The lazy way of checking for conversion errors
+    -- We "unpack" the "Right" value from each var. If any "Left" is found
+    -- The operation is aborted and the whole subroutine retuns "Left"
     let allParams = (Scheduler.ScheduleOptions groupName) <$> cStart <*> cEnd <*> sSize <*> time
     case allParams of
         Left err -> handleError err
