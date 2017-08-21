@@ -1,27 +1,41 @@
-{-# LANGUAGE RecordWildCards #-}
+{-# LANGUAGE RecordWildCards, NamedFieldPuns #-}
+{-# LANGUAGE TemplateHaskell #-}
 
 module Scheduler
     ( RunSchedule
+    , Config(..)
     , ScheduleOptions(..)
     , emptyRunSchedule
     , runScheduler
     , getRunSchedule
-    , addToSchedule
+    , addToQueue
+    , __remoteTable -- This is created by the call to remotable using TemplateHaskell
     ) where
 
 import Control.Concurrent (threadDelay)
 import Control.Concurrent.Async (Async, async, pollSTM)
 import qualified Control.Concurrent.STM as STM
+import Control.Monad (guard)
 import Data.Aeson
 import qualified Data.Map as Map
 import Data.Map (Map)
 import qualified Data.Maybe as Maybe
+import Data.Maybe (fromMaybe)
+import Data.Monoid ((<>))
 import Data.Text (Text, pack)
+import Data.Time.Clock (getCurrentTime)
+import Data.Time.ISO8601 (formatISO8601)
 import qualified Invoker as Wrecker
-import Model (Database)
+import Model (Database, WreckerRun)
+import qualified Recorder
+
+import Control.Distributed.Process (NodeId, Process, call, liftIO)
+import Control.Distributed.Process.Closure
+import Control.Distributed.Process.Internal.Types
+       (LocalProcess, runLocalProcess)
 
 data RunStatus
-    = Running (Maybe (Async ()))
+    = Running (Maybe (Async Wrecker.Result))
     | Done
     | Scheduled ScheduleOptions
     | None
@@ -36,6 +50,18 @@ data ScheduleOptions = ScheduleOptions
 
 type RunSchedule = STM.TVar (Map Text RunStatus)
 
+data Config = Config
+    { db :: Database
+    , testsList :: RunSchedule
+    , localProcess :: LocalProcess
+    , slaves :: [NodeId]
+    }
+
+wrecker :: Wrecker.Command -> Process (Either String WreckerRun)
+wrecker = liftIO . Wrecker.wrecker
+
+remotable ['wrecker]
+
 emptyRunSchedule :: IO RunSchedule
 emptyRunSchedule = do
     list <- Wrecker.listGroups
@@ -44,9 +70,9 @@ emptyRunSchedule = do
 getRunSchedule :: STM.TVar a -> IO a
 getRunSchedule testsList = STM.atomically (STM.readTVar testsList)
 
-runScheduler :: Database -> RunSchedule -> IO ()
-runScheduler db testsList = do
-    threadDelay $ 15 * 1000 * 1000 -- wait 15 seconds
+runScheduler :: Config -> IO ()
+runScheduler config@(Config {..}) = do
+    threadDelay $ 5 * 1000 * 1000 -- wait 5 seconds
     maybeSchedule <-
         STM.atomically $ do
             tests <- STM.readTVar testsList
@@ -54,7 +80,7 @@ runScheduler db testsList = do
             STM.writeTVar testsList cleaned
             pickOneToRun
     process maybeSchedule
-    runScheduler db testsList
+    runScheduler (Config {..})
   where
     cleanupFinished tests = do
         let running = filter isRunning (Map.toList tests)
@@ -91,61 +117,80 @@ runScheduler db testsList = do
     -- | If any test was selected for running, then run it
     process maybeSchedule =
         case maybeSchedule of
-            (name, Scheduled schedule):_ -> do
-                _ <- addToSchedule db name schedule testsList
-                return ()
+            (name, Scheduled schedule):_ -> tryRunningNow config name schedule
             _ -> return ()
 
-addToSchedule :: Database -> Text -> ScheduleOptions -> RunSchedule -> IO (Either Text Bool)
-addToSchedule db name schedule@ScheduleOptions {..} testsList = do
-    result <- STM.atomically changeList
-    case result of
-        Right True -> do
-            let steps = Wrecker.Concurrency <$> createSteps
-            let secs = Wrecker.Seconds <$> time
-            job <- async (Wrecker.escalate db gName name secs steps)
-            STM.atomically (updateStatus (Running $ Just job))
-            return result
-        _ -> return result
+addToQueue :: Text -> ScheduleOptions -> RunSchedule -> IO (Either Text Bool)
+addToQueue name schedule testsList =
+    STM.atomically $ do
+        tests <- STM.readTVar testsList
+        case canAddToSchedule name tests of
+            notPossible@(Left _) -> return notPossible
+            isPossible -> do
+                updateStatus testsList name (Scheduled schedule)
+                return isPossible
+
+tryRunningNow :: Config -> Text -> ScheduleOptions -> IO ()
+tryRunningNow config@(Config {..}) name ScheduleOptions {..} = do
+    canRun <- STM.atomically (markAsRunning testsList name)
+    guard canRun
+    now <- getCurrentTime
+    let steps = Wrecker.Concurrency <$> createSteps
+        fTime = pack . formatISO8601 $ now
+        groupName = gName <> " - " <> fTime
+        runner = escalateWithRecorder config name time groupName
+    job <- async (runLocalProcess localProcess $ runner steps)
+    STM.atomically (updateStatus testsList name (Running $ Just job))
   where
     createSteps =
         if cStart == 1 || cStart == 0
             then tail [0,sStep .. cEnd]
             else [cStart,(cStart + sStep) .. cEnd]
-    updateStatus :: RunStatus -> STM.STM ()
-    updateStatus s = STM.modifyTVar' testsList $ Map.insert name s
-    -- | Modifies the test list if it is valid to insert the new schedule
-    --
-    changeList :: STM.STM (Either Text Bool)
-    changeList = do
-        tests <- STM.readTVar testsList
-        case canExecute tests of
-            Left e -> return (Left e)
-            Right immediate -> do
-                let val =
-                        if immediate
-                            then (Running Nothing)
-                            else (Scheduled schedule)
-                updateStatus val
-                return $ Right immediate
-    -- | Returns whehter it is ok to schedule or run the fiven test
-    --   Left is returned when it is not possible to run the test.
-    --   "Right True" is returned when the test can be executed immediately
-    --   Otherwise the test is ok to be set for scheduling
-    --
-    canExecute list =
-        case Map.lookup name list of
-            Nothing -> Left "Test name does not exist"
-            Just (Running _) -> Left "This test is still running"
-            Just _ -> Right (nothingIsRuning list)
-    -- | Checks that none of the tests in the list have a Running status
-    --
-    nothingIsRuning =
-        all
-            (\tStatus ->
-                 case tStatus of
-                     Running _ -> False
-                     _ -> True)
+
+escalateWithRecorder ::
+       Config -- ^ The scheduler configuration
+    -> Text -- ^ The test name to execute
+    -> Maybe Int -- ^ Ampunt of seconds to spend on each test client
+    -> Text -- ^ The group name to assign to this test run
+    -> ([Wrecker.Concurrency] -> Process Wrecker.Result)
+escalateWithRecorder Config {db, slaves} name time groupName =
+    let secs = Wrecker.Seconds (fromMaybe 10 time)
+        builder = Wrecker.Command name secs
+        executer = remoteWrecker (head slaves)
+        recorder c r = liftIO (Recorder.record db groupName c r)
+    in Wrecker.escalate builder executer recorder
+
+remoteWrecker :: NodeId -> Wrecker.Command -> Process (Either String WreckerRun)
+remoteWrecker slave command = call $(functionTDict 'wrecker) slave ($(mkClosure 'wrecker) command)
+
+-- | Modifies the test list if it is valid to insert the new schedule
+markAsRunning :: RunSchedule -> Text -> STM.STM Bool
+markAsRunning testsList name = do
+    tests <- STM.readTVar testsList
+    if isRunnable name tests
+        then do
+            updateStatus testsList name (Running Nothing)
+            return True
+        else return False
+
+updateStatus :: RunSchedule -> Text -> RunStatus -> STM.STM ()
+updateStatus testsList name s = STM.modifyTVar' testsList (Map.insert name s)
+
+-- | Returns whehter it is ok to schedule or run the given test
+--   Left is returned when it is not possible to run the test.
+--   Otherwise the test is ok to be set for scheduling
+canAddToSchedule :: Text -> Map Text RunStatus -> Either Text Bool
+canAddToSchedule name list =
+    case Map.lookup name list of
+        Nothing -> Left "Test name does not exist"
+        Just (Running _) -> Left "This test is still running"
+        Just _ -> Right True
+
+isRunnable :: Text -> Map Text RunStatus -> Bool
+isRunnable name list =
+    case Map.lookup name list of
+        Just (Scheduled _) -> True
+        _ -> False
 
 ----------------------------------
 -- JSON Conversions

@@ -9,6 +9,7 @@ executable          wrecker-ui
     other-modules:  Model
                   , Invoker
                   , Scheduler
+                  , Recorder
     ghc-options:    -Wall -threaded -O2 -rtsopts -with-rtsopts=-N
     extensions:     OverloadedStrings
     build-depends:  base   >= 4      && < 5
@@ -36,6 +37,10 @@ executable          wrecker-ui
                   , temporary
                   , bytestring
                   , iso8601-time
-                  , monad-loops
                   , stm
                   , async
+                  , distributed-process
+                  , network-transport-tcp
+                  , distributed-process-simplelocalnet
+                  , binary
+                  , mtl

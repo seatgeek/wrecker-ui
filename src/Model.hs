@@ -1,5 +1,6 @@
 {-# LANGUAGE EmptyDataDecls #-}
 {-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE GADTs #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
@@ -12,6 +13,7 @@
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE StrictData #-}
+{-# LANGUAGE DeriveDataTypeable #-}
 {-# OPTIONS_GHC -fno-warn-orphans #-}
 
 module Model where
@@ -23,6 +25,7 @@ import Control.Monad.Trans.Reader (ReaderT)
 import qualified Control.Monad.Trans.Resource as R
 import Data.Aeson hiding (Value)
 import Data.Aeson.Types (Options(..), Parser)
+import Data.Binary (Binary(..))
 import Data.Char (toLower)
 import qualified Data.Map as Map
 import Data.Map (Map)
@@ -31,8 +34,9 @@ import Data.Pool (Pool)
 import Data.Ratio (numerator)
 import Data.Text (Text)
 import Data.Time.Clock (UTCTime)
+import Data.Typeable (Typeable)
 import Database.Esqueleto
-import Database.Persist (Key)
+import Database.Persist (Key(..))
 import qualified Database.Persist as P
 import Database.Persist.Postgresql (withPostgresqlPool)
 import qualified Database.Persist.Sql as Sql
@@ -68,7 +72,7 @@ share
     serverErrorHits Int
     failedHits Int
     quantile95 Double
-    deriving Eq Show Generic
+    deriving Eq Show Generic Typeable
 
   Page
     runId RunId Maybe
@@ -84,7 +88,7 @@ share
     serverErrorHits Int
     failedHits Int
     quantile95 Double
-    deriving Eq Show Generic
+    deriving Eq Show Generic Typeable
 |]
 
 ----------------------------------
@@ -105,7 +109,21 @@ data DbBackend
 data WreckerRun = WreckerRun
     { rollup :: Rollup
     , pages :: [Page]
-    } deriving (Eq, Show)
+    } deriving (Eq, Show, Generic, Typeable)
+
+instance Binary WreckerRun
+
+instance Binary Rollup
+
+instance Binary Page
+
+instance Binary (Key Run) where
+    get = fmap Sql.toSqlKey Data.Binary.get
+    put = put . Sql.fromSqlKey
+
+instance Binary (Key Page) where
+    get = fmap Sql.toSqlKey Data.Binary.get
+    put = put . Sql.fromSqlKey
 
 -------------------------------------
 -- Functions for working with the DB
@@ -207,6 +225,9 @@ findPageStats runIds url = do
 
 toKey :: Int -> Key Run
 toKey key = Sql.toSqlKey . fromIntegral $ key
+
+fromKey :: Key Run -> Int
+fromKey = fromIntegral . Sql.fromSqlKey
 
 set11Fields ::
        (Int -> t7 -> t6 -> t5 -> t4 -> t3 -> Int -> Int -> Int -> Int -> t2 -> t1)

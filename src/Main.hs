@@ -1,6 +1,8 @@
-{-# LANGUAGE RecordWildCards, NamedFieldPuns, DeriveGeneric #-}
+{-# LANGUAGE RecordWildCards, NamedFieldPuns, DeriveGeneric,
+  TypeApplications #-}
 
-import Control.Concurrent.Async (async, link)
+import Control.Concurrent.Async (race)
+import Control.Monad (void)
 import Control.Monad.IO.Class (liftIO)
 import Control.Monad.IO.Class (MonadIO)
 import Data.Aeson hiding (json)
@@ -27,23 +29,70 @@ import Model
         runMigrations, storeRunResults, withDb)
 import qualified Scheduler
 
+import Control.Distributed.Process (NodeId, Process)
+import qualified Control.Distributed.Process.Backend.SimpleLocalnet
+       as LocalNet
+import qualified Control.Distributed.Process.Node as Node
+
+import Control.Monad.Reader (ask)
+
+data Config = Config
+    { uiPort :: Int
+    , dbType :: DbBackend
+    , folder :: String
+    , testsList :: Scheduler.RunSchedule
+    }
+
 main :: IO ()
 main = do
-    port <-
-        do taintedPort <- lookupEnv "WRECKER_PORT"
-       -- Reading the port from the ENV. Abort with an error on bad port
-           let varReader = maybe (error "Bad WRECKER_PORT") id
-           return (maybe 3000 (varReader . readMaybe) taintedPort)
+    role <- lookupEnv "WRECKER_ROLE"
+    case role of
+        Just "slave" -> createSlave
+        Just "master" -> mainProcess =<< getConfig
+        Nothing -> mainProcess =<< getConfig
+        _ -> error "Only master and slave roles are valid"
+
+networkFunctions = Scheduler.__remoteTable Node.initRemoteTable
+
+createSlave = do
+    port <- readPort "WRECKER_PORT" 10501
+    backend <- LocalNet.initializeBackend "127.0.0.1" (show @Int port) networkFunctions
+    putStrLn "Started slave process"
+    LocalNet.startSlave backend
+
+mainProcess config = do
+    port <- readPort "WRECKER_PORT" 10500
+    backend <- LocalNet.initializeBackend "127.0.0.1" (show @Int port) networkFunctions
+    LocalNet.startMaster backend (startUI config)
+
+getConfig :: IO Config
+getConfig = do
+    uiPort <- readPort "WRECKER_UI_PORT" 3000
     dbType <- selectDatabaseType
     folder <- findAssetsFolder
     testsList <- Scheduler.emptyRunSchedule
-    withDb dbType $ \db ->
-        liftIO $ -- We're inside the DbMonad, so the results needs to be converted back to IO
-         do
-            runMigrations db
-            scheduler <- async (Scheduler.runScheduler db testsList)
-            link scheduler
-            routes port folder db testsList
+    return (Config {..})
+
+startUI :: Config -> [NodeId] -> Process ()
+startUI (Config {..}) slaves = do
+    localProcess <- ask -- Get the context that the Process monad is enclosing
+    liftIO $ do
+        putStrLn ("Found the following slave servers: " ++ show slaves)
+        withDb dbType $ \db ->
+            liftIO $ -- We're inside the DbMonad, so the results needs to be converted back to IO
+             do
+                runMigrations db
+                void $
+                    race -- start both function in different threads and stop the other if one dies
+                        (Scheduler.runScheduler Scheduler.Config {..})
+                        (routes uiPort folder db testsList)
+
+readPort :: Read port => String -> port -> IO port
+readPort name defaultPort = do
+    taintedPort <- lookupEnv name
+    -- Reading the port from the ENV. Abort with an error on bad port
+    let varReader = maybe (error $ "Bad " <> name) id
+    return (maybe defaultPort (varReader . readMaybe) taintedPort)
 
 ----------------------------------
 -- App initialization
@@ -108,7 +157,7 @@ routes port folder db testsList = do
         --  ^ Returns the basic info for the run, the list of pages and the general stats
         get "/test-list" (getTestList testsList)
         --  ^ Returns the list of tests with the status of the last run for them if any
-        post "/test-list" (scheduleTest db testsList)
+        post "/test-list" (scheduleTest testsList)
 
 ----------------------------------
 -- Controllers
@@ -240,8 +289,8 @@ getTestList testsList = do
     tests <- liftAndCatchIO $ Scheduler.getRunSchedule testsList
     json $ object ["status" .= True, "tests" .= tests]
 
-scheduleTest :: Database -> Scheduler.RunSchedule -> ActionM ()
-scheduleTest db testsList = do
+scheduleTest :: Scheduler.RunSchedule -> ActionM ()
+scheduleTest testsList = do
     testTitle <- param "testTitle"
     groupName <- param "groupName"
     cStart <- readEither <$> param "concurrencyStart"
@@ -256,7 +305,7 @@ scheduleTest db testsList = do
     case allParams of
         Left err -> handleError err
         Right schedule -> do
-            result <- liftAndCatchIO (Scheduler.addToSchedule db testTitle schedule testsList)
+            result <- liftAndCatchIO (Scheduler.addToQueue testTitle schedule testsList)
             either handleError handleSucccess result
   where
     handleError err = do
