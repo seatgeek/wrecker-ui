@@ -43,6 +43,7 @@ data Config = Config
     , dbType :: DbBackend -- ^ Either Sqlite or Postgres
     , folder :: String -- ^ The path to the assets folder
     , logLevel :: LogLevel -- ^ Either Debug or Silent. Currently ony used for db queries
+    , hostName :: String -- ^ The host this node is running on. Defaults to 127.0.0.1.
     , testsList :: Scheduler.RunSchedule -- ^ Private config holding the run scheduler
     }
 
@@ -69,13 +70,15 @@ getConfig = do
     dbType <- selectDatabaseType
     folder <- findAssetsFolder
     testsList <- Scheduler.emptyRunSchedule
+    hostName <- maybe "127.0.0.1" id <$> lookupEnv "WRECKER_HOST"
     return (Config {..})
 
 -- | Starts a slave worker node. Slaves are used to execute the wrecker cli and transmit back the results
 createSlave :: IO ()
 createSlave = do
     port <- readPort "WRECKER_PORT" 10501
-    backend <- LocalNet.initializeBackend "127.0.0.1" (show @Int port) networkFunctions
+    hostName <- maybe "127.0.0.1" id <$> lookupEnv "WRECKER_HOST"
+    backend <- LocalNet.initializeBackend hostName (show @Int port) networkFunctions
     putStrLn "Started slave process"
     LocalNet.startSlave backend
 
@@ -84,7 +87,7 @@ createSlave = do
 mainProcess :: Config -> IO ()
 mainProcess config = do
     port <- readPort "WRECKER_PORT" 10500
-    backend <- LocalNet.initializeBackend "127.0.0.1" (show @Int port) networkFunctions
+    backend <- LocalNet.initializeBackend (hostName config) (show @Int port) networkFunctions
     LocalNet.startMaster backend (startUI config)
 
 -- | Starts the program itself. That is, the http interface and the run scheduler
