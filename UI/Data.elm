@@ -3,6 +3,7 @@ module Data exposing (..)
 import Date
 import Json.Decode as Decode
 import Json.Decode.Pipeline as Pipeline
+import Dict exposing (Dict)
 
 
 {-| Represents the statistics as they come from the wrecker-ui server
@@ -37,8 +38,7 @@ type alias RunInfo =
 and also the basic information related to the run itself.
 -}
 type alias Run =
-    { pages : List String
-    , stats : Stats
+    { stats : Stats
     , run : RunInfo
     }
 
@@ -53,6 +53,12 @@ type alias Page =
     }
 
 
+type alias Results =
+    { runs : List Run
+    , pages : Dict String (List Int)
+    }
+
+
 
 ---------------------------------------------
 --- JSON Decoding
@@ -62,7 +68,6 @@ type alias Page =
 decodeRun : Decode.Decoder Run
 decodeRun =
     Pipeline.decode Run
-        |> Pipeline.required "pages" (Decode.list Decode.string)
         |> Pipeline.required "stats" decodeStats
         |> Pipeline.required "run" decodeRunInfo
 
@@ -99,6 +104,13 @@ decodeRunInfo =
         |> Pipeline.required "groupName" Decode.string
         |> Pipeline.required "id" Decode.int
         |> Pipeline.required "match" Decode.string
+
+
+decodeResults : Decode.Decoder Results
+decodeResults =
+    Pipeline.decode Results
+        |> Pipeline.required "runs" (Decode.list decodeRun)
+        |> Pipeline.required "pages" (Decode.dict (Decode.list Decode.int))
 
 
 decodeDateTime : String -> Decode.Decoder Date.Date

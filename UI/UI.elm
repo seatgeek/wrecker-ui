@@ -1,6 +1,6 @@
 module Main exposing (..)
 
-import Data exposing (Run, Page, RunInfo, decodeRunInfo, decodeRun, decodePage)
+import Data exposing (Run, Page, RunInfo, Results, decodeRunInfo, decodeRun, decodePage, decodeResults)
 import Date
 import Dict exposing (Dict)
 import Graph exposing (..)
@@ -63,6 +63,7 @@ type alias Model =
     { runTitles : List String
     , searchField : String
     , runs : List Run
+    , pages : Dict String (List Int) -- A reverse map of the pages tested for the loaded run stats
     , graph : Title
     , graphState : Graph.Model
     , filteredGroups : List String
@@ -88,6 +89,7 @@ init location =
                 { runTitles = []
                 , searchField = ""
                 , runs = []
+                , pages = Dict.empty
                 , graph = "Mean Time / Concurrency"
                 , graphState = Graph.defaultModel
                 , filteredGroups = []
@@ -111,10 +113,10 @@ type Msg
     | SearchFieldUpdated String
     | SearchButtonClicked
     | LoadRunTitles (Result Http.Error (List RunInfo))
-    | LoadRunStats (Result Http.Error (List Run))
+    | LoadRunStats (Result Http.Error Results)
     | LoadPageStats (Result Http.Error (List Page))
-    | LoadFromLocation (Result Http.Error ( List Run, String, Maybe (List Page) ))
-    | RefreshRunStats (Result Http.Error ( List Run, String, Maybe (List Page) ))
+    | LoadFromLocation (Result Http.Error ( Results, String, Maybe (List Page) ))
+    | RefreshRunStats (Result Http.Error ( Results, String, Maybe (List Page) ))
     | GraphMsg Graph.Msg
     | RunTitleClicked String
     | ChangeGraphType String
@@ -183,25 +185,26 @@ update msg model =
 
         LoadRunTitles (Err error) ->
             -- If there was an error loading the run titles, we just log it in the console
-            debugError model error
+            debugError model "LoadRunTitles" error
 
         LoadRunTitles (Ok runs) ->
             return { model | runTitles = extractTitles runs }
 
         LoadRunStats (Err error) ->
             -- If there was an error loading the run stats, we just log it in the console
-            debugError model error
+            debugError model "LoadRunStats" error
 
-        LoadRunStats (Ok runs) ->
+        LoadRunStats (Ok { runs, pages }) ->
             -- But if we could successfully load the run stats, then we store the results and
             -- calculate run groups that need be shown
             { model | selectedPage = Nothing }
                 |> setRuns runs
+                |> setPageMap pages
                 |> return
 
         LoadPageStats (Err error) ->
             -- If there was an error loading the page stats, we just log it in the console
-            debugError model error
+            debugError model "LoadPageStats" error
 
         LoadPageStats (Ok pages) ->
             -- But if we successfully get the HTTP response for the page stats, then we need
@@ -221,35 +224,39 @@ update msg model =
         LoadFromLocation (Err error) ->
             -- This is the case when we want to re-construct the state from the browser URL
             -- ... but an error happened
-            debugError model error
+            debugError model "LoadFromLocation" error
 
-        LoadFromLocation (Ok ( runs, page, Just pages )) ->
+        LoadFromLocation (Ok ( { runs, pages }, page, Just pageStats )) ->
             -- This is the case when we want to re-construct the state from the browser URL
             model
                 |> setRuns runs
-                |> setPageSelection page pages
+                |> setPageMap pages
+                |> setPageSelection page pageStats
                 |> return
 
-        LoadFromLocation (Ok ( runs, _, Nothing )) ->
+        LoadFromLocation (Ok ( { runs, pages }, _, Nothing )) ->
             -- This is the case when we want to re-construct the state from the browser URL
             { model | selectedPage = Nothing }
                 |> setRuns runs
+                |> setPageMap pages
                 |> return
 
         RefreshRunStats (Err error) ->
             -- This is the case we are auto-refreshing stats currenlty in the viewport
             -- ... but an error happened
-            debugError model error
+            debugError model "RefreshRunStats" error
 
-        RefreshRunStats (Ok ( runs, page, Just pages )) ->
+        RefreshRunStats (Ok ( { runs, pages }, page, Just pageStats )) ->
             -- This is the case when we want to re-construct the state from the browser URL
             { model | runs = runs }
-                |> setPageSelection page pages
+                |> setPageMap pages
+                |> setPageSelection page pageStats
                 |> return
 
-        RefreshRunStats (Ok ( runs, _, Nothing )) ->
+        RefreshRunStats (Ok ( { runs, pages }, _, Nothing )) ->
             -- This is the case when we want to re-construct the state from the browser URL
             { model | runs = runs }
+                |> setPageMap pages
                 |> return
 
         GraphMsg gMsg ->
@@ -337,7 +344,7 @@ update msg model =
 
 setRoute : Maybe Router.Route -> Model -> ( Model, Cmd Msg )
 setRoute maybeRoute model =
-    case Debug.log "route" maybeRoute of
+    case maybeRoute of
         Nothing ->
             ( model, Cmd.none )
 
@@ -411,6 +418,13 @@ setRuns runs model =
     }
 
 
+setPageMap : Dict String (List Int) -> Model -> Model
+setPageMap pages model =
+    { model
+        | pages = pages
+    }
+
+
 setPageSelection : String -> List Page -> Model -> Model
 setPageSelection page pages model =
     let
@@ -428,17 +442,17 @@ startPollingForResults testName model =
     { model | pollForResults = Just testName }
 
 
-debugError : Model -> a -> ( Model, Cmd msg )
-debugError model err =
+debugError : Model -> String -> a -> ( Model, Cmd msg )
+debugError model place err =
     let
         _ =
-            Debug.log "error:" err
+            Debug.log ("error at " ++ place ++ ":") err
     in
         ( model, Cmd.none )
 
 
 type alias ReloadAction =
-    Result Http.Error ( List Run, String, Maybe (List Page) ) -> Msg
+    Result Http.Error ( Results, String, Maybe (List Page) ) -> Msg
 
 
 loadRunThenPage : ReloadAction -> Maybe String -> Maybe String -> Cmd Msg
@@ -446,15 +460,15 @@ loadRunThenPage action maybeTestName maybePageName =
     getManyRuns (Maybe.withDefault "__" maybeTestName)
         |> Http.toTask
         |> Task.andThen
-            (\runs ->
+            (\({ runs, pages } as results) ->
                 case maybePageName of
                     Nothing ->
-                        Task.succeed (Ok ( runs, "", Nothing ))
+                        Task.succeed (Ok ( results, "", Nothing ))
 
                     Just page ->
                         getPageByRuns runs page
                             |> Http.toTask
-                            |> Task.andThen (\stats -> Task.succeed (Ok ( runs, page, Just stats )))
+                            |> Task.andThen (\stats -> Task.succeed (Ok ( results, page, Just stats )))
             )
         |> Task.onError (\e -> Task.succeed (Err e))
         |> Task.perform action
@@ -532,18 +546,11 @@ getRuns name =
         (Decode.field "runs" (Decode.list decodeRunInfo))
 
 
-{-| Returns a Request object that can be used to load all the info related to a single Run
--}
-getSingleRun : Int -> Http.Request Run
-getSingleRun id =
-    Http.get ("/runs/" ++ toString id) decodeRun
-
-
 {-| Returns a Request object that can be used to load a list of run statistics
 -}
-getManyRuns : String -> Http.Request (List Run)
+getManyRuns : String -> Http.Request Results
 getManyRuns match =
-    Http.get ("/runs/rollup/?match=" ++ Http.encodeUri match) (Decode.list decodeRun)
+    Http.get ("/runs/rollup/?match=" ++ Http.encodeUri match) decodeResults
 
 
 {-| Returns a Request object that can be used to load a list of page statistics
@@ -698,13 +705,13 @@ rightPlotPanel model =
 {-| Renders the right column where the graph selector and lists of pages reside
 -}
 rightmostPanel : Model -> Html Msg
-rightmostPanel { graph, filteredGroups, runs, concurrencyComparison, selectedPage } =
+rightmostPanel { graph, filteredGroups, runs, pages, concurrencyComparison, selectedPage } =
     div []
         [ select [ onChange ChangeGraphType ] (List.map (renderGraphItem graph) validGraphs)
         , renderConcurrencySelector concurrencyComparison runs
         , renderGroups filteredGroups runs
         , h4 [] [ text "Pages" ]
-        , renderPageList (extractSelectedPage selectedPage) runs
+        , renderPageList (extractSelectedPage selectedPage) pages
         , div [ class "scrollFader" ] []
         ]
 
@@ -790,18 +797,9 @@ renderGroupItem filtered ( color, runGroup ) =
             ]
 
 
-uniquePages : List Run -> List String
-uniquePages runs =
-    runs
-        |> List.map .pages
-        |> List.concat
-        |> EList.unique
-        |> List.sort
-
-
-renderPageList : String -> List Run -> Html Msg
-renderPageList selected runs =
-    ul [ class "view-plot--right__pages" ] (List.map (renderPageItem selected) (uniquePages runs))
+renderPageList : String -> Dict String (List Int) -> Html Msg
+renderPageList selected pages =
+    ul [ class "view-plot--right__pages" ] (List.map (renderPageItem selected) (Dict.keys pages))
 
 
 renderPageItem : String -> String -> Html Msg

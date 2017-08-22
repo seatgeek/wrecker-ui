@@ -109,7 +109,8 @@ data DbBackend
 
 data LogLevel
     = Silent
-    | Debug deriving (Show, Read, Eq)
+    | Debug
+    deriving (Show, Read, Eq)
 
 data WreckerRun = WreckerRun
     { rollup :: Rollup
@@ -129,7 +130,6 @@ instance Binary (Key Run) where
 instance Binary (Key Page) where
     get = fmap Sql.toSqlKey Data.Binary.get
     put = put . Sql.fromSqlKey
-
 
 -------------------------------------
 -- Functions for working with the DB
@@ -170,15 +170,17 @@ findRuns keys =
         orderBy [asc (r ^. RunCreated)]
         return r
 
-findPagesList :: MonadIO m => [Key Run] -> SqlReadT m [Text]
+findPagesList :: MonadIO m => [Key Run] -> SqlReadT m [(Key Run, Text)]
 findPagesList runIds = do
     rows <-
         select $
         distinct $
         from $ \p -> do
             where_ (p ^. PageRunId `in_` justList (valList runIds))
-            return (coalesceDefault [p ^. PageUrl] (val ""))
-    return (fmap unValue rows)
+            return
+                ( coalesceDefault [p ^. PageRunId] (val (toKey 0))
+                , coalesceDefault [p ^. PageUrl] (val ""))
+    return (fmap (\(k, p) -> (unValue k, unValue p)) rows)
 
 findRunStats :: MonadIO m => [Key Run] -> SqlReadT m [(Key Run, Rollup)]
 findRunStats runIds = do

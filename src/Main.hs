@@ -7,6 +7,7 @@ import Control.Monad.IO.Class (liftIO)
 import Control.Monad.IO.Class (MonadIO)
 import Control.Monad.Reader (ask)
 import Data.Aeson hiding (json)
+import qualified Data.Map as Map
 import Data.Maybe (catMaybes, listToMaybe)
 import Data.Monoid ((<>))
 import Data.Text (Text)
@@ -243,9 +244,11 @@ getRun db = do
         json $ object ["error" .= ("Invalid run id" :: Text), "reason" .= err]
         status badRequest400
 
--- | Fetches the run stats in the datatabase
---
-fetchRunStats :: MonadIO m => [Int] -> TransactionMonad m ([(P.Entity Run, Rollup)], [Text])
+-- | Fetches the run stats in the datatabase. It retuns a pair:
+--   The first positionin the pair is a list of (run, rollup)
+--   The second position is a reverse index of pages participating in the run {page: [run id, ...]}
+fetchRunStats ::
+       MonadIO m => [Int] -> TransactionMonad m ([(P.Entity Run, Rollup)], Map.Map Text [Key Run])
 fetchRunStats runId = do
     let runKey = toSqlKey <$> runId
     stats <- findRunStats runKey
@@ -257,7 +260,9 @@ fetchRunStats runId = do
           , run@(P.Entity rKey _) <- runs
           , sKey == rKey
           ]
-        , list)
+        , reverseIndex list)
+  where
+    reverseIndex pages = Map.fromListWith (++) [(page, [key]) | (key, page) <- pages]
 
 getManyRuns :: Database -> ActionM ()
 getManyRuns db = do
@@ -268,12 +273,9 @@ getManyRuns db = do
             result <- liftAndCatchIO (runDbAction db $ fetchRunStats allIds)
             sendResult result
   where
-    sendResult (results, pages)
-      -- I'm cheating here, by setting the same pages to all different runs. This should
-      -- be fixed if we want insight into the individual pages for each run
-     = do
-        let buildObject (run, stats) = object ["run" .= run, "stats" .= stats, "pages" .= pages]
-        json $ fmap buildObject results
+    sendResult (results, pages) = do
+        let buildObject (run, stats) = object ["run" .= run, "stats" .= stats]
+        json $ object ["runs" .= fmap buildObject results, "pages" .= pages]
         status ok200
     -- | Responds with a JSON error
     --
