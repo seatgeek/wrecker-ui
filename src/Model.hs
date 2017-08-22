@@ -19,7 +19,8 @@
 module Model where
 
 import Control.Monad.IO.Class (MonadIO)
-import Control.Monad.Logger (NoLoggingT(..), runNoLoggingT)
+import Control.Monad.Logger
+       (LoggingT(..), filterLogger, runStdoutLoggingT)
 import Control.Monad.Trans.Control (MonadBaseControl(..))
 import Control.Monad.Trans.Reader (ReaderT)
 import qualified Control.Monad.Trans.Resource as R
@@ -106,6 +107,10 @@ data DbBackend
     = Postgresql ConnectInfo
     | Sqlite
 
+data LogLevel
+    = Silent
+    | Debug deriving (Show, Read, Eq)
+
 data WreckerRun = WreckerRun
     { rollup :: Rollup
     , pages :: [Page]
@@ -125,11 +130,15 @@ instance Binary (Key Page) where
     get = fmap Sql.toSqlKey Data.Binary.get
     put = put . Sql.fromSqlKey
 
+
 -------------------------------------
 -- Functions for working with the DB
 -------------------------------------
-withDb :: DbMonad m => DbBackend -> (Database -> NoLoggingT m a) -> m a
-withDb dbType = runNoLoggingT . withPool 10
+withDb :: DbMonad m => LogLevel -> DbBackend -> (Database -> LoggingT m a) -> m a
+withDb logLevel dbType =
+    case logLevel of
+        Debug -> runStdoutLoggingT . withPool 10
+        Silent -> runStdoutLoggingT . filterLogger (\_ _ -> False) . withPool 10
   where
     withPool size =
         case dbType of

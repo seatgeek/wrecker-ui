@@ -24,10 +24,10 @@ import Web.Scotty
 import qualified Database.Persist as P
 import qualified Database.Persist.Sql as Sql
 import Model
-       (Database, DbBackend(..), Key, Page(..), Rollup(..), Run(..),
-        TransactionMonad, WreckerRun(..), findPageStats, findPagesList,
-        findRunStats, findRuns, findRunsByMatch, runDbAction,
-        runMigrations, storeRunResults, withDb)
+       (Database, DbBackend(..), Key, LogLevel(..), Page(..), Rollup(..),
+        Run(..), TransactionMonad, WreckerRun(..), findPageStats,
+        findPagesList, findRunStats, findRuns, findRunsByMatch,
+        runDbAction, runMigrations, storeRunResults, withDb)
 
 import Control.Distributed.Process (NodeId, Process)
 import qualified Control.Distributed.Process.Backend.SimpleLocalnet
@@ -42,6 +42,7 @@ data Config = Config
     { uiPort :: Int -- ^ The port for the HTTP interface
     , dbType :: DbBackend -- ^ Either Sqlite or Postgres
     , folder :: String -- ^ The path to the assets folder
+    , logLevel :: LogLevel -- ^ Either Debug or Silent. Currently ony used for db queries
     , testsList :: Scheduler.RunSchedule -- ^ Private config holding the run scheduler
     }
 
@@ -62,6 +63,9 @@ main = do
 getConfig :: IO Config
 getConfig = do
     uiPort <- readPort "WRECKER_UI_PORT" 3000
+    maybeLevel <- lookupEnv "WRECKER_LOG_LEVEL"
+    let parsedLevel = maybe Nothing readMaybe maybeLevel
+        logLevel = maybe Silent id parsedLevel
     dbType <- selectDatabaseType
     folder <- findAssetsFolder
     testsList <- Scheduler.emptyRunSchedule
@@ -89,11 +93,11 @@ startUI (Config {..}) slaves = do
     localProcess <- ask -- Get the context that the Process monad is enclosing
     liftIO $ do
         putStrLn ("Found the following slave servers: " ++ show slaves)
-        withDb dbType $ \db ->
+        withDb logLevel dbType $ \db ->
             liftIO $ -- We're inside the DbMonad, so the results needs to be converted back to IO
              do
-                runMigrations db
-                void $
+                runMigrations db -- Run the database migrations first
+                void $ -- Disregard the return value of `race`
                     race -- start both function in different threads and stop the other if one dies
                         (Scheduler.runScheduler Scheduler.Config {..}) -- start accepting new jobs
                         (routes uiPort folder db testsList) -- start accepting http requests
