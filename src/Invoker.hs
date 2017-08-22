@@ -9,6 +9,7 @@ import Control.Monad (foldM)
 import Data.Aeson (eitherDecodeStrict)
 import Data.Binary (Binary)
 import qualified Data.ByteString as BS
+import Data.Either (lefts, rights)
 import Data.Text (Text, pack, unpack)
 import Data.Typeable (Typeable)
 import GHC.Generics
@@ -39,17 +40,19 @@ instance Binary Command
 
 data Result
     = Success
-    | ExecError Text
-    | TooManyErrors deriving (Show)
+    | ExecError [Text]
+    | TooManyErrors
+    deriving (Show)
 
 escalate ::
        Monad m
     => (Concurrency -> Command) -- ^ A function that given the concurrecy, will create a Command record
-    -> (Command -> m (Either String WreckerRun)) -- ^ A function to execute the tests in wrecker
-    -> (Command -> Either String WreckerRun -> m ()) -- ^ A function to record the run
+    -> (Command -> m [Either String WreckerRun]) -- ^ A function to execute the tests in wrecker
+    -> (Command -> m key) -- ^ A function to create the run identifier
+    -> (key -> [Either String WreckerRun] -> m ()) -- ^ A function to record the run
     -> [Concurrency] -- ^ The list of concurrency steps to execute in wrecker
     -> m Result
-escalate builder executer recorder steps = foldM run Success steps
+escalate builder executer keyGen recorder steps = foldM run Success steps
   where
     run prev step = do
         case prev of
@@ -57,21 +60,26 @@ escalate builder executer recorder steps = foldM run Success steps
             err -> return err
     execution step = do
         let command = builder step
-        result <- executer command
-        recorder command result
-        case result of
-            Left err -> return (ExecError (pack err))
-            Right res ->
-                if isUnAcceptable res
+        key <- keyGen command
+        results <- executer command
+        recorder key results
+        case lefts results of
+            [] ->
+                if isUnAcceptable (rights results)
                     then return TooManyErrors
                     else return Success
+            errors -> return (ExecError (fmap pack errors))
 
-isUnAcceptable :: WreckerRun -> Bool
+isUnAcceptable :: [WreckerRun] -> Bool
+isUnAcceptable [] = False
 -- | A run is not acceptable if more than 1% of the hits were errors
-isUnAcceptable WreckerRun {rollup = Rollup {..}} =
-    (fromIntegral (rollupUserErrorHits + rollupServerErrorHits + rollupFailedHits)) /
-    (fromIntegral rollupHits) >
-    (0.01 :: Double)
+isUnAcceptable results =
+    let (errors, hits) = foldr extract (0, 0) results
+    in errors / hits > (0.01 :: Double)
+  where
+    extract (WreckerRun {rollup = Rollup {..}}) (errors, hits) =
+        ( errors + fromIntegral (rollupUserErrorHits + rollupServerErrorHits + rollupFailedHits)
+        , hits + fromIntegral rollupHits)
 
 wrecker :: Command -> IO (Either String WreckerRun)
 wrecker (Command title (Seconds secs) (Concurrency conc)) = do

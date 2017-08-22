@@ -177,7 +177,7 @@ findRunStats runIds = do
         select $
         from $ \rollup -> do
             where_ (rollup ^. RollupRunId `in_` justList (valList (runIds)))
-            groupBy (rollup ^. RollupId, rollup ^. RollupRunId)
+            groupBy (rollup ^. RollupRunId)
             orderBy [asc (rollup ^. RollupRunId)]
             return
                 ( coalesceDefault [rollup ^. RollupRunId] (val (toKey 0))
@@ -203,7 +203,7 @@ findPageStats runIds url = do
         from $ \page -> do
             where_ (page ^. PageRunId `in_` justList (valList runIds))
             where_ (page ^. PageUrl ==. just (val url))
-            groupBy (page ^. PageRunId, page ^. PageUrl)
+            groupBy (page ^. PageRunId)
             return
                 ( coalesceDefault [page ^. PageRunId] (val (toKey 0))
                 , coalesceDefault [sum_ (page ^. PageHits)] (val 0)

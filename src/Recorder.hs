@@ -2,21 +2,24 @@
 
 module Recorder where
 
+import Data.Either (lefts, rights)
 import Data.Text (Text)
 import Data.Time.Clock (getCurrentTime)
 import Database.Persist (insert)
 import Invoker (Command(..), Concurrency(..))
 import Model
-       (Database, Run(..), WreckerRun(..), runDbAction, storeRunResults)
+       (Database, Key, Run(..), WreckerRun(..), runDbAction,
+        storeRunResults)
 
-record :: Database -> Text -> Command -> Either String WreckerRun -> IO ()
-record db gName (Command title _ (Concurrency concurrency)) result = do
+createRun :: Database -> Text -> Command -> IO (Key Run)
+createRun db gName (Command title _ (Concurrency concurrency)) = do
     now <- getCurrentTime
-    case result of
-        Left err -> do
+    runDbAction db $ insert $ Run title gName concurrency now
+
+record :: Database -> Key Run -> [Either String WreckerRun] -> IO ()
+record db runId result = do
+    case lefts result of
+        [] -> runDbAction db $ mapM_ (storeRunResults runId) (rights result)
+        errors -> do
             putStrLn "Got an error when processing wrecker results:"
-            putStrLn err
-        Right run ->
-            runDbAction db $ do
-                runId <- insert $ Run title gName concurrency now
-                storeRunResults runId run
+            print errors

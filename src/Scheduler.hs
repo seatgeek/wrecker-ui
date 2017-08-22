@@ -17,6 +17,7 @@ import Control.Concurrent.Async (Async, async, pollSTM)
 import qualified Control.Concurrent.STM as STM
 import Control.Monad (guard)
 import Data.Aeson
+import Data.List.NonEmpty (NonEmpty(..), (!!), fromList)
 import qualified Data.Map as Map
 import Data.Map (Map)
 import qualified Data.Maybe as Maybe
@@ -27,9 +28,14 @@ import Data.Time.Clock (getCurrentTime)
 import Data.Time.ISO8601 (formatISO8601)
 import qualified Invoker as Wrecker
 import Model (Database, WreckerRun)
+import Prelude hiding ((!!))
 import qualified Recorder
 
-import Control.Distributed.Process (NodeId, Process, call, liftIO)
+import Control.Distributed.Process
+       (NodeId, Process, getSelfNode, liftIO)
+import Control.Distributed.Process.Async
+       (AsyncResult(..), AsyncTask, asyncLinked, remoteTask, wait)
+import qualified Control.Distributed.Process.Async as DAsync
 import Control.Distributed.Process.Closure
 import Control.Distributed.Process.Internal.Types
        (LocalProcess, runLocalProcess)
@@ -60,6 +66,7 @@ data Config = Config
 wrecker :: Wrecker.Command -> Process (Either String WreckerRun)
 wrecker = liftIO . Wrecker.wrecker
 
+-- Make the wrecker function ready to be called over the wire on slave nodes
 remotable ['wrecker]
 
 emptyRunSchedule :: IO RunSchedule
@@ -153,15 +160,60 @@ escalateWithRecorder ::
     -> Maybe Int -- ^ Ampunt of seconds to spend on each test client
     -> Text -- ^ The group name to assign to this test run
     -> ([Wrecker.Concurrency] -> Process Wrecker.Result)
-escalateWithRecorder Config {db, slaves} name time groupName =
-    let secs = Wrecker.Seconds (fromMaybe 10 time)
+escalateWithRecorder Config {db, slaves} name time groupName = do
+    let secs = Wrecker.Seconds (fromMaybe 10 time) -- Run for 10 seconds if no preference was given
         builder = Wrecker.Command name secs
-        executer = remoteWrecker (head slaves)
-        recorder c r = liftIO (Recorder.record db groupName c r)
-    in Wrecker.escalate builder executer recorder
+        keyGen command = liftIO (Recorder.createRun db groupName command)
+        executer = remoteWrecker slaves
+        recorder key result = liftIO (Recorder.record db key result)
+    Wrecker.escalate builder executer keyGen recorder
 
-remoteWrecker :: NodeId -> Wrecker.Command -> Process (Either String WreckerRun)
-remoteWrecker slave command = call $(functionTDict 'wrecker) slave ($(mkClosure 'wrecker) command)
+remoteWrecker :: [NodeId] -> Wrecker.Command -> Process [Either String WreckerRun]
+remoteWrecker slaves command@(Wrecker.Command {concurrency}) = do
+    thisNode <- getSelfNode
+    tasks <- mapM asyncLinked (divideWork (fromList $ thisNode : slaves)) -- Execute each task remotely and async
+    mapM waitFor tasks
+  where
+    divideWork :: NonEmpty NodeId -> [AsyncTask (Either String WreckerRun)]
+    -- Try to comfortably accommodate as much work on a single node as possible
+    -- and return a list of async tasks that should be executed on the network
+    divideWork nodes@(selfNode :| _) =
+        let Wrecker.Concurrency conc_ = concurrency
+            conc = fromIntegral conc_
+        in if conc < 20
+               then [buildTask command selfNode]
+               else let (first:rest) =
+                            [ nodes !! (i - 1) -- Return the node at position i
+                            | i <- [1 .. length nodes] -- Select one more node
+                            , (conc / fromIntegral i) >= 10 -- If there are at least 1000 threads to run on it
+                            ]
+                        -- Calculate the number of threads per task to execute
+                        total = fromIntegral (length (first : rest)) -- Get the total available workers
+                        fairDivision = fromRational (conc / total) :: Double -- Divide the number of threads equally
+                        avgConcurrency = floor fairDivision -- Round to integer
+                        remainderConcurrency =
+                            avgConcurrency + -- One of the workers need to get the remainder threads
+                            (ceiling (total * ((conc / total) - fromIntegral avgConcurrency)))
+                        setConcurrency c = command {Wrecker.concurrency = Wrecker.Concurrency c}
+                        --
+                        -- Build the async tasks that should be executed
+                        firstTask = buildTask (setConcurrency remainderConcurrency) first -- First task gets teh remainder
+                        restTasks = fmap (buildTask (setConcurrency avgConcurrency)) rest -- But the rest get the same amount of threads
+                    in firstTask : restTasks
+
+-- | Builds the async task for the givend node and command
+--   the "task" is executing a wrecker command on a remote machine
+buildTask :: Wrecker.Command -> NodeId -> AsyncTask (Either String WreckerRun)
+buildTask command node = remoteTask $(functionTDict 'wrecker) node ($(mkClosure 'wrecker) command)
+
+waitFor :: DAsync.Async (Either String WreckerRun) -> Process (Either String WreckerRun)
+waitFor task = do
+    asyncResult <- wait task -- Wait for the task to be done
+    case asyncResult of
+        AsyncDone res -> return res
+        AsyncFailed reason -> return (Left (show reason))
+        AsyncLinkFailed reason -> return (Left (show reason))
+        _ -> return (Left "Error spawning async wrecker task")
 
 -- | Modifies the test list if it is valid to insert the new schedule
 markAsRunning :: RunSchedule -> Text -> STM.STM Bool
