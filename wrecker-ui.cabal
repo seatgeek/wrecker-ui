@@ -43,5 +43,6 @@ executable          wrecker-ui
                   , network-transport-tcp
                   , distributed-process-simplelocalnet
                   , distributed-process-async
+                  , distributed-static
                   , binary
                   , mtl

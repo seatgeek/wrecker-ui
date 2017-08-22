@@ -5,6 +5,7 @@ import Control.Concurrent.Async (race)
 import Control.Monad (void)
 import Control.Monad.IO.Class (liftIO)
 import Control.Monad.IO.Class (MonadIO)
+import Control.Monad.Reader (ask)
 import Data.Aeson hiding (json)
 import Data.Maybe (catMaybes, listToMaybe)
 import Data.Monoid ((<>))
@@ -27,21 +28,26 @@ import Model
         TransactionMonad, WreckerRun(..), findPageStats, findPagesList,
         findRunStats, findRuns, findRunsByMatch, runDbAction,
         runMigrations, storeRunResults, withDb)
-import qualified Scheduler
 
 import Control.Distributed.Process (NodeId, Process)
 import qualified Control.Distributed.Process.Backend.SimpleLocalnet
        as LocalNet
 import qualified Control.Distributed.Process.Node as Node
+import Control.Distributed.Static (RemoteTable)
 
-import Control.Monad.Reader (ask)
+import qualified Scheduler
 
+-- | CLI options
 data Config = Config
-    { uiPort :: Int
-    , dbType :: DbBackend
-    , folder :: String
-    , testsList :: Scheduler.RunSchedule
+    { uiPort :: Int -- ^ The port for the HTTP interface
+    , dbType :: DbBackend -- ^ Either Sqlite or Postgres
+    , folder :: String -- ^ The path to the assets folder
+    , testsList :: Scheduler.RunSchedule -- ^ Private config holding the run scheduler
     }
+
+-- | The list of functions that are allowed to be called on remote nodes.
+networkFunctions :: RemoteTable
+networkFunctions = Scheduler.__remoteTable Node.initRemoteTable
 
 main :: IO ()
 main = do
@@ -52,19 +58,7 @@ main = do
         Nothing -> mainProcess =<< getConfig
         _ -> error "Only master and slave roles are valid"
 
-networkFunctions = Scheduler.__remoteTable Node.initRemoteTable
-
-createSlave = do
-    port <- readPort "WRECKER_PORT" 10501
-    backend <- LocalNet.initializeBackend "127.0.0.1" (show @Int port) networkFunctions
-    putStrLn "Started slave process"
-    LocalNet.startSlave backend
-
-mainProcess config = do
-    port <- readPort "WRECKER_PORT" 10500
-    backend <- LocalNet.initializeBackend "127.0.0.1" (show @Int port) networkFunctions
-    LocalNet.startMaster backend (startUI config)
-
+-- | Initializes the CLI config
 getConfig :: IO Config
 getConfig = do
     uiPort <- readPort "WRECKER_UI_PORT" 3000
@@ -73,6 +67,23 @@ getConfig = do
     testsList <- Scheduler.emptyRunSchedule
     return (Config {..})
 
+-- | Starts a slave worker node. Slaves are used to execute the wrecker cli and transmit back the results
+createSlave :: IO ()
+createSlave = do
+    port <- readPort "WRECKER_PORT" 10501
+    backend <- LocalNet.initializeBackend "127.0.0.1" (show @Int port) networkFunctions
+    putStrLn "Started slave process"
+    LocalNet.startSlave backend
+
+-- | Starts the local worker node. This node will always receive part of the load, specially when the
+--   cocurrency level for a run is low.
+mainProcess :: Config -> IO ()
+mainProcess config = do
+    port <- readPort "WRECKER_PORT" 10500
+    backend <- LocalNet.initializeBackend "127.0.0.1" (show @Int port) networkFunctions
+    LocalNet.startMaster backend (startUI config)
+
+-- | Starts the program itself. That is, the http interface and the run scheduler
 startUI :: Config -> [NodeId] -> Process ()
 startUI (Config {..}) slaves = do
     localProcess <- ask -- Get the context that the Process monad is enclosing
@@ -84,15 +95,8 @@ startUI (Config {..}) slaves = do
                 runMigrations db
                 void $
                     race -- start both function in different threads and stop the other if one dies
-                        (Scheduler.runScheduler Scheduler.Config {..})
-                        (routes uiPort folder db testsList)
-
-readPort :: Read port => String -> port -> IO port
-readPort name defaultPort = do
-    taintedPort <- lookupEnv name
-    -- Reading the port from the ENV. Abort with an error on bad port
-    let varReader = maybe (error $ "Bad " <> name) id
-    return (maybe defaultPort (varReader . readMaybe) taintedPort)
+                        (Scheduler.runScheduler Scheduler.Config {..}) -- start accepting new jobs
+                        (routes uiPort folder db testsList) -- start accepting http requests
 
 ----------------------------------
 -- App initialization
@@ -318,6 +322,13 @@ scheduleTest testsList = do
 ----------------------------------
 -- Utilities
 ----------------------------------
+readPort :: Read port => String -> port -> IO port
+readPort name defaultPort = do
+    taintedPort <- lookupEnv name
+    -- Reading the port from the ENV. Abort with an error on bad port
+    let varReader = maybe (error $ "Bad " <> name) id
+    return (maybe defaultPort (varReader . readMaybe) taintedPort)
+
 optionalParam :: (Monoid a, Parsable a) => LText.Text -> ActionM a
 optionalParam name = param name `rescue` (\_ -> return mempty)
 

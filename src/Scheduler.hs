@@ -40,29 +40,35 @@ import Control.Distributed.Process.Closure
 import Control.Distributed.Process.Internal.Types
        (LocalProcess, runLocalProcess)
 
+-- | Represents each of the stages a run can be at
 data RunStatus
     = Running (Maybe (Async Wrecker.Result))
     | Done
     | Scheduled ScheduleOptions
     | None
 
+-- | Avilable options for executing a run
 data ScheduleOptions = ScheduleOptions
-    { gName :: Text
-    , cStart :: Int
-    , cEnd :: Int
-    , sStep :: Int
-    , time :: Maybe Int
+    { gName :: Text -- ^ The run group name, used to tag many similar runs with different concurrency
+    , cStart :: Int -- ^ Concurrency start
+    , cEnd :: Int -- ^ Concurrency end
+    , sStep :: Int -- ^ Step size. This is the increment to use to get from start concurrency to end
+    , time :: Maybe Int -- ^ The amount of time to spend on each of the individual runs
     } deriving (Show)
 
+-- | A transactional memory variable containing the status fo the current run and the schedule for future runs
 type RunSchedule = STM.TVar (Map Text RunStatus)
 
+-- | Scheduler configuration
 data Config = Config
-    { db :: Database
-    , testsList :: RunSchedule
-    , localProcess :: LocalProcess
-    , slaves :: [NodeId]
+    { db :: Database -- ^ A database instance, used to store the run results
+    , testsList :: RunSchedule -- ^ The varibale to store the current run and schedule for future runs
+    , localProcess :: LocalProcess -- ^ This node description
+    , slaves :: [NodeId] -- ^ A list of worker slaves used to distribute runs accross them
     }
 
+-- | Wraps the wrecker function into the Process monad
+--   This is used for remotely executing wrecker in other nodes
 wrecker :: Wrecker.Command -> Process (Either String WreckerRun)
 wrecker = liftIO . Wrecker.wrecker
 
@@ -77,6 +83,8 @@ emptyRunSchedule = do
 getRunSchedule :: STM.TVar a -> IO a
 getRunSchedule testsList = STM.atomically (STM.readTVar testsList)
 
+-- | A blocking functions that refreshes the schedule state each 5 seconds.
+--   This functions is responsible for executing the run jobs as they become available
 runScheduler :: Config -> IO ()
 runScheduler config@(Config {..}) = do
     threadDelay $ 5 * 1000 * 1000 -- wait 5 seconds
@@ -127,6 +135,8 @@ runScheduler config@(Config {..}) = do
             (name, Scheduled schedule):_ -> tryRunningNow config name schedule
             _ -> return ()
 
+-- | Adds a new run job to the queue. This function will wither queue the job
+--   or return a reason for not being able to do so.
 addToQueue :: Text -> ScheduleOptions -> RunSchedule -> IO (Either Text Bool)
 addToQueue name schedule testsList =
     STM.atomically $ do
@@ -137,6 +147,8 @@ addToQueue name schedule testsList =
                 updateStatus testsList name (Scheduled schedule)
                 return isPossible
 
+-- | Checks wheter or not it is possible to executing the give run right now and
+-- if possible, it executes it immediately.
 tryRunningNow :: Config -> Text -> ScheduleOptions -> IO ()
 tryRunningNow config@(Config {..}) name ScheduleOptions {..} = do
     canRun <- STM.atomically (markAsRunning testsList name)
@@ -154,6 +166,9 @@ tryRunningNow config@(Config {..}) name ScheduleOptions {..} = do
             then tail [0,sStep .. cEnd]
             else [cStart,(cStart + sStep) .. cEnd]
 
+-- | A helper function used to execute a batch of run from a starting to an ending concurrency level,
+--   this helper function will try to execute wrecker remotely if the right conditions are given, and
+--   will also record the results in the database.
 escalateWithRecorder ::
        Config -- ^ The scheduler configuration
     -> Text -- ^ The test name to execute
@@ -168,6 +183,8 @@ escalateWithRecorder Config {db, slaves} name time groupName = do
         recorder key result = liftIO (Recorder.record db key result)
     Wrecker.escalate builder executer keyGen recorder
 
+-- | Executes a wrecker command in the remote sleves, if any are provided. The local node will always
+--   participate in executing some of the load. If no slaves are available, the local node executes the whole run.
 remoteWrecker :: [NodeId] -> Wrecker.Command -> Process [Either String WreckerRun]
 remoteWrecker slaves command@(Wrecker.Command {concurrency}) = do
     thisNode <- getSelfNode
@@ -206,6 +223,7 @@ remoteWrecker slaves command@(Wrecker.Command {concurrency}) = do
 buildTask :: Wrecker.Command -> NodeId -> AsyncTask (Either String WreckerRun)
 buildTask command node = remoteTask $(functionTDict 'wrecker) node ($(mkClosure 'wrecker) command)
 
+-- | Waits for a remote Asyn job to finish, and returns its result once it dies or it's done.
 waitFor :: DAsync.Async (Either String WreckerRun) -> Process (Either String WreckerRun)
 waitFor task = do
     asyncResult <- wait task -- Wait for the task to be done
@@ -225,6 +243,7 @@ markAsRunning testsList name = do
             return True
         else return False
 
+-- | Updates the status of a single run in the give run schedule
 updateStatus :: RunSchedule -> Text -> RunStatus -> STM.STM ()
 updateStatus testsList name s = STM.modifyTVar' testsList (Map.insert name s)
 
@@ -238,6 +257,7 @@ canAddToSchedule name list =
         Just (Running _) -> Left "This test is still running"
         Just _ -> Right True
 
+-- | Checks whether or not a particular run (given its name) can be added to the queue.
 isRunnable :: Text -> Map Text RunStatus -> Bool
 isRunnable name list =
     case Map.lookup name list of
