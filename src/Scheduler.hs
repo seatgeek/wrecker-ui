@@ -180,12 +180,12 @@ remoteWrecker slaves command@(Wrecker.Command {concurrency}) = do
     divideWork nodes@(selfNode :| _) =
         let Wrecker.Concurrency conc_ = concurrency
             conc = fromIntegral conc_
-        in if conc < 20
+        in if length slaves == 0 || conc < 2000
                then [buildTask command selfNode]
                else let (first:rest) =
                             [ nodes !! (i - 1) -- Return the node at position i
                             | i <- [1 .. length nodes] -- Select one more node
-                            , (conc / fromIntegral i) >= 10 -- If there are at least 1000 threads to run on it
+                            , (conc / fromIntegral i) >= 1000 -- If there are at least 1000 threads to run on it
                             ]
                         -- Calculate the number of threads per task to execute
                         total = fromIntegral (length (first : rest)) -- Get the total available workers
