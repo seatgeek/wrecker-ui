@@ -94,8 +94,13 @@ createSlave = do
 mainProcess :: Config -> IO ()
 mainProcess config = do
     port <- readPort "WRECKER_PORT" 10500
+    hasStaticSlaves <- lookupEnv "WRECKER_SLAVES"
     backend <- LocalNet.initializeBackend (hostName config) (show @Int port) networkFunctions
-    LocalNet.startMaster backend (startUI config)
+    case hasStaticSlaves of
+        Nothing -> LocalNet.startMaster backend (startUI config)
+        _ -> do
+            node <- (LocalNet.newLocalNode backend)
+            Node.runProcess node (startUI config [])
 
 -- | Starts the program itself. That is, the http interface and the run scheduler
 startUI :: Config -> [NodeId] -> Process ()
