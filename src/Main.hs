@@ -95,16 +95,19 @@ mainProcess :: Config -> IO ()
 mainProcess config = do
     port <- readPort "WRECKER_PORT" 10500
     hasStaticSlaves <- lookupEnv "WRECKER_SLAVES"
+    putStrLn "Starting local node"
     backend <- LocalNet.initializeBackend (hostName config) (show @Int port) networkFunctions
     case hasStaticSlaves of
         Nothing -> LocalNet.startMaster backend (startUI config)
         _ -> do
+            putStrLn "Found a static list of slaves"
             node <- (LocalNet.newLocalNode backend)
             Node.runProcess node (startUI config [])
 
 -- | Starts the program itself. That is, the http interface and the run scheduler
 startUI :: Config -> [NodeId] -> Process ()
 startUI (Config {..}) discoveredSlaves = do
+    liftIO $ putStrLn "Starting Web UI"
     let slaves = staticSlaves ++ discoveredSlaves
     localProcess <- ask -- Get the context that the Process monad is enclosing
     liftIO $ do
