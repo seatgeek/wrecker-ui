@@ -10,4 +10,5 @@ cabal.sandbox.config
 elm-stuff
 wrecker-ui-*
 assets/app.js
+*.db
 release.json
