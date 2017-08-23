@@ -46,7 +46,15 @@ a connection string via the `WRECKER_DB` env variable:
 WRECKER_DB="postgres://user:pass@host/db_name" wrecker-ui
 ```
 
-### Storing runs in the database
+### Executing load testing runs
+
+The Web interface is able to execute runs using wrecker. For this purpose it is required that your wrecker to provide test groups,
+that is, the web interface is only usefule when you have used wrecker as a library to creat your own test suite.
+
+Click on the `Schedule Test` link to see a list of tests available to wrecker and set the options for the run. Results should
+shortly appear in the plot for the given test name.
+
+### Manually storing runs in the database
 
 Use the `--output-path` option when executing `wrecker` to produce a `JSON` file. This file will be parsed and stored by this
 application. Then, create the first run with the options you provided to `wrecker`:
@@ -78,6 +86,50 @@ curl -X POST 'http://localhost:3000/runs/1' \
 
 You can now see you results in the web interface.
 
+
+## Distributing load testing accross nodes
+
+Wrecker is limited by the amount of memory and CPU available to a single machine. For slow pages (triple digit milliseconds)
+it is usually not a problem, as Haskell can very intelligently save memory while it is waiting for results to be transmitted
+over the wire. But for a big concurrency number, specially in the presence of fast responding pages,
+it is easy to exhaust the available resources.
+
+Wrecker-UI allows you to distribute the testing load across nodes in the network, once the concurrency level for a test exceeds
+2000 threads.
+
+In order to distribute the load you need to first create the worker nodes, by starting wrecker-ui in slave mode in another machine:
+
+```sh
+WRECKER_ROLE=slave WRECKER_HOST=192.168.1.18 WRECKER_PORT=10501 wrecker-ui
+```
+
+The `WRECKER_HOST` env var is the IP or hostname that the worker will be bound to. If no variable is provided,
+it will bind itself to `127.0.0.1` which is generally not very useful unless you are testing in a single machine.
+
+You can start as many slaves as you need. Generally it makes no sense to start more than one node per physical machine.
+After starting the worker nodes, you can start the master node. The master node is also the node that will display the
+web interface.
+
+You start the master node as described in the previous sections. Upon start, it should show something like this:
+
+```
+Found the following slave servers: [nid://192.168.1.18:15001:0]
+```
+
+Note: All nodes where wrecker-ui is running, will also need `wrecker` to be in the `$PATH`
+
+### Static list of workers
+
+Wrecker-UI uses a unicast broadcast to discover the workers in the network. This is sometimes not possible or desirable,
+for example when deploying it in AWS EC2 servers. The workaround is to specify a static list of worker servers when
+starting the master node:
+
+```sh
+WRECKER_SLAVES=192.168.1.18:15005,192.168.1.20:15001 wrecker-ui
+```
+
+Wrecker-UI does not currently verify that the slaves can actaully respond when specifying a static list. This is oftentimes
+convenient as it does not impose any restrictions in the order the nodes need to be started.
 
 ## Building from source
 

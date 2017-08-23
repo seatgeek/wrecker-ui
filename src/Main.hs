@@ -7,15 +7,18 @@ import Control.Monad.IO.Class (liftIO)
 import Control.Monad.IO.Class (MonadIO)
 import Control.Monad.Reader (ask)
 import Data.Aeson hiding (json)
+import Data.Either (lefts, rights)
 import qualified Data.Map as Map
 import Data.Maybe (catMaybes, listToMaybe)
 import Data.Monoid ((<>))
 import Data.Text (Text)
 import qualified Data.Text as Text
+import Data.Text.Encoding (encodeUtf8)
 import qualified Data.Text.Internal.Lazy as LText
 import Data.Time.Clock (getCurrentTime)
 import Database.PostgreSQL.Simple.URL (parseDatabaseUrl)
 import Network.HTTP.Types
+import Network.HostAndPort (hostAndPort)
 import Network.Wai.Middleware.Cors (simpleCors)
 import qualified System.Directory as Dir
 import System.Environment (lookupEnv)
@@ -30,11 +33,12 @@ import Model
         findPagesList, findRunStats, findRuns, findRunsByMatch,
         runDbAction, runMigrations, storeRunResults, withDb)
 
-import Control.Distributed.Process (NodeId, Process)
+import Control.Distributed.Process (NodeId(..), Process)
 import qualified Control.Distributed.Process.Backend.SimpleLocalnet
        as LocalNet
 import qualified Control.Distributed.Process.Node as Node
 import Control.Distributed.Static (RemoteTable)
+import Network.Transport (EndPointAddress(..))
 
 import qualified Scheduler
 
@@ -45,6 +49,7 @@ data Config = Config
     , folder :: String -- ^ The path to the assets folder
     , logLevel :: LogLevel -- ^ Either Debug or Silent. Currently ony used for db queries
     , hostName :: String -- ^ The host this node is running on. Defaults to 127.0.0.1.
+    , staticSlaves :: [NodeId]
     , testsList :: Scheduler.RunSchedule -- ^ Private config holding the run scheduler
     }
 
@@ -70,6 +75,7 @@ getConfig = do
         logLevel = maybe Silent id parsedLevel
     dbType <- selectDatabaseType
     folder <- findAssetsFolder
+    staticSlaves <- getStaticSlaves
     testsList <- Scheduler.emptyRunSchedule
     hostName <- maybe "127.0.0.1" id <$> lookupEnv "WRECKER_HOST"
     return (Config {..})
@@ -93,7 +99,8 @@ mainProcess config = do
 
 -- | Starts the program itself. That is, the http interface and the run scheduler
 startUI :: Config -> [NodeId] -> Process ()
-startUI (Config {..}) slaves = do
+startUI (Config {..}) discoveredSlaves = do
+    let slaves = staticSlaves ++ discoveredSlaves
     localProcess <- ask -- Get the context that the Process monad is enclosing
     liftIO $ do
         putStrLn ("Found the following slave servers: " ++ show slaves)
@@ -135,6 +142,26 @@ selectDatabaseType = do
                 Just connDetails -> do
                     putStrLn "Using PostgreSQL"
                     return (Postgresql connDetails)
+
+getStaticSlaves :: IO [NodeId]
+getStaticSlaves = do
+    maybeString <- lookupEnv "WRECKER_SLAVES"
+    case maybeString of
+        Nothing -> return []
+        Just "" -> return []
+        Just str -> do
+            let parsed = parseNodes (Text.pack str)
+                builder s = NodeId (EndPointAddress (encodeUtf8 (s <> ":0")))
+            mapM_ (putStrLn . Text.unpack) (lefts parsed) -- Let the user know there were errors in slaves
+            return (fmap (builder . Text.pack) (rights parsed))
+  where
+    parseNodes str =
+        let splitted = Text.splitOn "," str
+        in fmap (ensurePort . validate) splitted
+    validate s = (s, hostAndPort (Text.unpack s))
+    ensurePort (s, (Left _)) = Left ("Invalid slave address: " <> s)
+    ensurePort (s, (Right (_, Nothing))) = Left ("Invalid slave address. Missing port for: " <> s)
+    ensurePort (_, (Right ((host, Just port)))) = Right (host <> ":" <> port)
 
 ----------------------------------
 -- Routes and middleware

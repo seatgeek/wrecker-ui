@@ -40,9 +40,11 @@ executable          wrecker-ui
                   , stm
                   , async
                   , distributed-process
+                  , network-transport
                   , network-transport-tcp
                   , distributed-process-simplelocalnet
                   , distributed-process-async
                   , distributed-static
                   , binary
                   , mtl
+                  , HostAndPort
