@@ -120,4 +120,6 @@ listGroups :: IO [String]
 listGroups = do
     output <- readCreateProcess (shell "sg-wrecker --list-test-groups") ""
     let each = lines output
-    return (fmap (dropWhile (\c -> c == '>' || c == ' ')) each)
+    return (fmap (dropWhile (\c -> c `elem` notMeaningfulChars)) each)
+  where
+    notMeaningfulChars = '.' : '>' : ' ' : ['0' .. '9']
