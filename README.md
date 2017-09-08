@@ -38,10 +38,10 @@ WRECKER_ASSETS="/path/to/assets" wrecker-ui
 The server will start in port `3000`. You can then visit [http://localhost:3000/](http://localhost:3000/) to start using the UI.
 It wil not contain any data the first time. So you need to populate it yourself:
 
-Alternatively you can change the default port using the `WRECKER_PORT` env variable
+Alternatively you can change the default port using the `WRECKER_UI_PORT` env variable
 
 ```sh
-WRECKER_PORT=8000 wrecker-ui
+WRECKER_UI_PORT=8000 wrecker-ui
 ```
 
 ### Using PostgreSQL
