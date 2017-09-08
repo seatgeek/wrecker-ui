@@ -10,6 +10,7 @@ license-file:  LICENSE
 category:      Web
 author:        José Lorenzo Rodríguez
 maintainer:    lorenzo@seatgeek.com
+data-dir: assets
 
 executable          wrecker-ui
     default-language: Haskell2010
