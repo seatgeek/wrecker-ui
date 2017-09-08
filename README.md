@@ -1,9 +1,13 @@
 # Wrecker-UI
 
 This tool contains a small HTTP server and javascript application that can be used to store the results of different
-`wrecker` runs and plot them.
+[wrecker](https://github.com/lorenzo/wrecker) runs and plot them.
 
-It is meant to be used as a way to track progress between various runs of `wrecker` so it can be said confidently
+[Wrecker](https://github.com/lorenzo/wrecker) is a library for building performance test suites that shines when testing
+REST APIs, where the result of one step needs to be used for the following one.
+
+It is meant to be used as a way to track progress between various runs of [wrecker](https://github.com/lorenzo/wrecker)
+so it can be said confidently
 that the performance of a particular work flow was affected in between code changes.
 
 ## Installation
