@@ -1,11 +1,18 @@
 name:          wrecker-ui
-version:       0.0.0
-cabal-version: >= 1.8
+version:       2.3.0
+synopsis:      A web interface for Wrecker, the HTTP Performance Benchmarker
+description:
+ 'wrecker-ui' is a web based interface to visualize performance tests built using the wrecker library and schedule test runs.
+cabal-version: >= 1.10
 build-type:    Simple
-license:             BSD3
-license-file:        LICENSE
+license:       BSD3
+license-file:  LICENSE
+category:      Web
+author:        José Lorenzo Rodríguez
+maintainer:    lorenzo@seatgeek.com
 
 executable          wrecker-ui
+    default-language: Haskell2010
     hs-source-dirs: src
     main-is:        Main.hs
     other-modules:  Model
@@ -13,7 +20,7 @@ executable          wrecker-ui
                   , Scheduler
                   , Recorder
     ghc-options:    -Wall -threaded -O2 -rtsopts -with-rtsopts=-N
-    extensions:     OverloadedStrings
+    default-extensions:  OverloadedStrings
     build-depends:  base   >= 4      && < 5
                   , scotty
                   , text
@@ -50,3 +57,7 @@ executable          wrecker-ui
                   , binary
                   , mtl
                   , HostAndPort
+
+source-repository head
+    type:     git
+    location: https://github.com/seatgeek/wrecker-ui
