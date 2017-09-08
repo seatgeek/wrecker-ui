@@ -14,6 +14,7 @@ import Data.Text (Text, pack, unpack)
 import Data.Typeable (Typeable)
 import GHC.Generics
 import Model (Rollup(..), WreckerRun(..))
+import System.Environment (lookupEnv)
 import System.IO.Temp (withSystemTempFile)
 import System.Process (callProcess, readCreateProcess, shell)
 
@@ -98,9 +99,10 @@ wrecker (Command title (Seconds secs) (Concurrency conc)) = do
         Right runResult -> return runResult
   where
     runScript = do
+        executable <- findExecutable
         withSystemTempFile "wrecker.results" $ \file handle -> do
             callProcess
-                "sg-wrecker"
+                executable
                 [ "--concurrency"
                 , show conc
                 , "--log-level"
@@ -118,8 +120,15 @@ wrecker (Command title (Seconds secs) (Concurrency conc)) = do
 -- | Returns the list of tests that are executable in the wrecker CLI
 listGroups :: IO [String]
 listGroups = do
-    output <- readCreateProcess (shell "sg-wrecker --list-test-groups") ""
+    executable <- findExecutable
+    output <- readCreateProcess (shell $ executable ++ " --list-test-groups") ""
     let each = lines output
     return (fmap (dropWhile (\c -> c `elem` notMeaningfulChars)) each)
   where
     notMeaningfulChars = '.' : '>' : ' ' : ['0' .. '9']
+
+-- | Returns the default executable name or the one present in the WRECKER_EXECUTABLE env var
+findExecutable :: IO String
+findExecutable = do
+    executable <- lookupEnv "WRECKER_EXECUTABLE"
+    return (maybe "wrecker" id executable)

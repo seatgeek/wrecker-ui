@@ -20,6 +20,14 @@ the current directory:
 wrecker-ui
 ```
 
+Typically, you would use `wrecker-ui` paired with a `wrecker` executable CLI command, containing your own tests. By default,
+`wrecker-ui` looks for `wrecker` command present in PATH, but you can customize it by providing the `WRECKER_EXECUTABLE`
+environment variable. The value of the variable needs to have the name of the executable in it:
+
+```sh
+WRECKER_EXECUTABLE="/path/to/wrecker-cli" wrecker-ui
+```
+
 If you want to run from a folder where the `assets` directory is not present. Then set the `WRECKER_ASSETS` env variable
 
 
@@ -73,7 +81,7 @@ behavior under different concurrency loads.
 This will return an `id` you can use for future requests:
 
 ```json
-{"success": true, id: 1}
+{"success": true, "id": 1}
 ```
 
 Now, use the id to store the JSON result from the `wrecker` run:

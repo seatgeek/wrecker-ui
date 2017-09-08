@@ -22,7 +22,7 @@ import List.Extra as EList
 import Plot exposing (..)
 import Round exposing (roundNum)
 import Svg exposing (Svg)
-import Svg.Attributes as SvgAttr exposing (stroke, strokeDasharray, r, fill, strokeWidth)
+import Svg.Attributes as SvgAttr exposing (stroke, strokeDasharray, r, fill, strokeWidth, transform)
 import Svg.Attributes exposing (stroke)
 import Svg.Events as SvgEvent
 
@@ -319,7 +319,6 @@ basicSeries hovered xLegend yLegend =
         { defaultSeriesPlotCustomizations
             | horizontalAxis = rangeFrameAxis hovered (.x >> roundNum 3)
             , margin = { top = 20, bottom = 20, left = 150, right = 40 }
-            , toDomainLowest = \y -> y - 0.3
             , junk = legend xLegend yLegend
         }
 
@@ -330,15 +329,26 @@ legend xLegend yLegend summary =
         verticalCenter =
             summary.y.dataMax / 2
     in
-        [ junk (title yLegend) (summary.x.dataMin - 30) verticalCenter
-        , junk (title xLegend) summary.x.max (summary.y.dataMin - (summary.y.dataMin - summary.y.min) / 1.3)
+        [ junk (yTitle yLegend) summary.x.min verticalCenter
+        , junk (xTitle xLegend) summary.x.max summary.y.min
         ]
 
 
-title : String -> Svg msg
-title txt =
+xTitle : String -> Svg msg
+xTitle txt =
     viewLabel
         [ fill blueStroke
+        , transform "translate(-30, 20)"
+        , SvgAttr.style "text-anchor: end; font-style: italic; font-size:10px"
+        ]
+        txt
+
+
+yTitle : String -> Svg msg
+yTitle txt =
+    viewLabel
+        [ fill blueStroke
+        , transform "translate(-30, 0)"
         , SvgAttr.style "text-anchor: end; font-style: italic; font-size:10px"
         ]
         txt
