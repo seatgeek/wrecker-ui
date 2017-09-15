@@ -87,7 +87,7 @@ isUnAcceptable results =
     in errors / hits > (0.01 :: Double)
   where
     extract (WreckerRun {rollup = Rollup {..}}) (errors, hits) =
-        ( errors + fromIntegral (rollupUserErrorHits + rollupServerErrorHits + rollupFailedHits)
+        ( errors + fromIntegral (rollupServerErrorHits + rollupFailedHits)
         , hits + fromIntegral rollupHits)
 
 -- | Invokes the wrecker command line tool with the given options
