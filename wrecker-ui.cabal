@@ -1,5 +1,5 @@
 name:          wrecker-ui
-version:       2.4.0.0
+version:       2.4.1.0
 synopsis:      A web interface for Wrecker, the HTTP Performance Benchmarker
 description:
  'wrecker-ui' is a web based interface to visualize performance tests built using the wrecker library and schedule test runs.

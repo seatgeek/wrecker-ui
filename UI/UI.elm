@@ -121,6 +121,7 @@ type Msg
     | RunTitleClicked String
     | ChangeGraphType String
     | ToggleFilterGroup String
+    | ShowOnlyGroup String
     | PageNameClicked String
     | ChangeConcurrencyComparison Int
     | ChangeScreen Screen
@@ -293,6 +294,11 @@ update msg model =
                         filteredGroups
             in
                 return { model | filteredGroups = newFilteredGroups }
+
+        ShowOnlyGroup group ->
+            -- If a group name is doubleclicked, then we need to only show its corresponding points in the graph
+            -- and hide everything else.
+            return { model | filteredGroups = [ group ] }
 
         PageNameClicked page ->
             -- When a page URL is clicked in the list, we want update the plot to show the statistics for
@@ -789,6 +795,7 @@ renderGroupItem filtered ( color, runGroup ) =
             [ style [ ( "cursor", "pointer" ) ]
             , classList [ ( "grayed-out", isFiltered ) ]
             , onClick (ToggleFilterGroup runGroup.run.groupName)
+            , onDoubleClick (ShowOnlyGroup runGroup.run.groupName)
             ]
             [ span
                 [ style [ ( "color", color ), ( "font-size", "25px" ) ] ]
