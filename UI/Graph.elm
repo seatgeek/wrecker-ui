@@ -25,6 +25,7 @@ import Svg exposing (Svg)
 import Svg.Attributes as SvgAttr exposing (stroke, strokeDasharray, r, fill, strokeWidth, transform)
 import Svg.Attributes exposing (stroke)
 import Svg.Events as SvgEvent
+import String.Extra exposing (rightOfBack, clean)
 
 
 {-| Creates a Title alias to easier identify a string it refers to a graph title
@@ -205,6 +206,9 @@ assignColors runs =
 
 {-| Returns a List of pairs where the first in the pair is the groupName
 and the secnd is the list of runs having the same groupName.
+
+The list of groups is capped to 30, as we have no more colors to assign!
+
 -}
 buildGroups : List Run -> List ( String, List Run )
 buildGroups runs =
@@ -217,13 +221,31 @@ buildGroups runs =
                 Just l ->
                     Just (run :: l)
 
-        buildDict ( groupName, run ) dict =
-            Dict.update groupName (insertOrUpdate run) dict
+        extractKey r =
+            r.run.groupName
+                |> rightOfBack "- "
+                |> clean
+                |> Date.fromString
+                |> Result.withDefault (Date.fromTime 0)
+                |> Date.toTime
+
+        buildDict run dict =
+            Dict.update (extractKey run) (insertOrUpdate run) dict
+
+        setGroupName ( _, aggregatedRuns ) =
+            case aggregatedRuns of
+                run :: _ ->
+                    ( run.run.groupName, aggregatedRuns )
+
+                _ ->
+                    ( "", aggregatedRuns )
     in
         runs
-            |> List.map (\r -> ( r.run.groupName, r ))
             |> List.foldl buildDict Dict.empty
             |> Dict.toList
+            |> List.reverse
+            |> List.take 30
+            |> List.map setGroupName
 
 
 graphDefinition : Title -> Maybe Graph

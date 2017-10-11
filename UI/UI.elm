@@ -754,28 +754,12 @@ renderGroups filteredGroups runs =
             runs
                 |> assignColors
                 |> EList.uniqueBy Tuple.first
-                |> List.sortWith sortByGroupName
-                |> List.reverse
     in
         ul []
             (List.map
                 (renderGroupItem filteredGroups)
                 groups
             )
-
-
-sortByGroupName : ( String, Run ) -> ( String, Run ) -> Order
-sortByGroupName ( _, aRun ) ( _, bRun ) =
-    let
-        extractDate r =
-            r.run.groupName
-                |> rightOfBack "- "
-                |> clean
-                |> Date.fromString
-                |> Result.withDefault (Date.fromTime 0)
-                |> Date.toTime
-    in
-        compare (extractDate aRun) (extractDate bRun)
 
 
 renderGroupItem : List String -> GraphData -> Html Msg
