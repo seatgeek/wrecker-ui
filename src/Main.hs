@@ -3,19 +3,17 @@
 
 import Control.Concurrent.Async (race)
 import Control.Monad (void)
-import Control.Monad.IO.Class (liftIO)
-import Control.Monad.IO.Class (MonadIO)
+import Control.Monad.IO.Class (MonadIO, liftIO)
 import Control.Monad.Reader (ask)
 import Data.Aeson hiding (json)
 import Data.Either (lefts, rights)
 import qualified Data.Map as Map
-import Data.Maybe (catMaybes, listToMaybe)
+import Data.Maybe (catMaybes, fromMaybe, listToMaybe)
 import Data.Monoid ((<>))
 import Data.Text (Text)
 import qualified Data.Text as Text
 import Data.Text.Encoding (encodeUtf8)
 import qualified Data.Text.Internal.Lazy as LText
-import Data.Time.Clock (getCurrentTime)
 import Database.PostgreSQL.Simple.URL (parseDatabaseUrl)
 import Network.HTTP.Types
 import Network.HostAndPort (hostAndPort)
@@ -29,9 +27,10 @@ import qualified Database.Persist as P
 import qualified Database.Persist.Sql as Sql
 import Model
        (Database, DbBackend(..), Key, LogLevel(..), Page(..), Rollup(..),
-        Run(..), TransactionMonad, WreckerRun(..), findPageStats,
-        findPagesList, findRunStats, findRuns, findRunsByMatch,
-        runDbAction, runMigrations, storeRunResults, withDb)
+        Run(..), RunGroup, TransactionMonad, WreckerRun(..), findPageStats,
+        findPagesList, findRunGroups, findRunStats, findRuns,
+        findRunsByMatch, runDbAction, runMigrations, storeRunResults,
+        withDb)
 
 import Control.Distributed.Process (NodeId(..), Process)
 import qualified Control.Distributed.Process.Backend.SimpleLocalnet
@@ -72,19 +71,19 @@ getConfig = do
     uiPort <- readPort "WRECKER_UI_PORT" 3000
     maybeLevel <- lookupEnv "WRECKER_LOG_LEVEL"
     let parsedLevel = maybe Nothing readMaybe maybeLevel
-        logLevel = maybe Silent id parsedLevel
+        logLevel = fromMaybe Silent parsedLevel
     dbType <- selectDatabaseType
     folder <- findAssetsFolder
     staticSlaves <- getStaticSlaves
     testsList <- Scheduler.emptyRunSchedule
-    hostName <- maybe "127.0.0.1" id <$> lookupEnv "WRECKER_HOST"
-    return (Config {..})
+    hostName <- fromMaybe "127.0.0.1" <$> lookupEnv "WRECKER_HOST"
+    return Config {..}
 
 -- | Starts a slave worker node. Slaves are used to execute the wrecker cli and transmit back the results
 createSlave :: IO ()
 createSlave = do
     port <- readPort "WRECKER_PORT" 10501
-    hostName <- maybe "127.0.0.1" id <$> lookupEnv "WRECKER_HOST"
+    hostName <- fromMaybe "127.0.0.1" <$> lookupEnv "WRECKER_HOST"
     backend <- LocalNet.initializeBackend hostName (show @Int port) networkFunctions
     putStrLn "Started slave process"
     LocalNet.startSlave backend
@@ -101,12 +100,12 @@ mainProcess config = do
         Nothing -> LocalNet.startMaster backend (startUI config)
         _ -> do
             putStrLn "Found a static list of slaves"
-            node <- (LocalNet.newLocalNode backend)
+            node <- LocalNet.newLocalNode backend
             Node.runProcess node (startUI config [])
 
 -- | Starts the program itself. That is, the http interface and the run scheduler
 startUI :: Config -> [NodeId] -> Process ()
-startUI (Config {..}) discoveredSlaves = do
+startUI Config {..} discoveredSlaves = do
     liftIO $ putStrLn "Starting Web UI"
     let slaves = staticSlaves ++ discoveredSlaves
     localProcess <- ask -- Get the context that the Process monad is enclosing
@@ -175,7 +174,7 @@ getStaticSlaves = do
 -- Routes and middleware
 ----------------------------------
 routes :: Int -> String -> Database -> Scheduler.RunSchedule -> IO ()
-routes port folder db testsList = do
+routes port folder db testsList =
     scotty port $ -- Let's declare the routes and handlers
      do
         middleware simpleCors
@@ -192,8 +191,6 @@ routes port folder db testsList = do
         -- ^ Serves the few static files we have
         get "/runs" (listRuns db)
         --  ^ Gets the list of runs that have been stored. Optionally filtering by "match"
-        post "/runs" (createRun db)
-        --  ^ Creates a new run and returns the id
         post "/runs/:id" (storeResults db)
         --  ^ Gets the JSON blob from a wrecker run and stores them in the DB
         get "/runs/rollup" (getManyRuns db)
@@ -217,25 +214,6 @@ listRuns db = do
   where
     fetchRuns :: Text -> IO [P.Entity Run]
     fetchRuns match = runDbAction db $ findRunsByMatch match
-
-createRun :: Database -> ActionM ()
-createRun db = do
-    conc <- readEither <$> param "concurrency"
-    title <- param "title"
-    group <- optionalParam "groupName"
-    case conc of
-        Left err -> do
-            json $ object ["error" .= ("Invalid concurrency number" :: Text), "reason" .= err]
-            status badRequest400
-        Right concurrency -> do
-            now <- liftAndCatchIO getCurrentTime
-            let run = Run title group concurrency now
-            newId <- liftAndCatchIO (doStoreRun run)
-            json $ object ["success" .= True, "id" .= newId]
-            status created201
-  where
-    doStoreRun :: Run -> IO (Key Run)
-    doStoreRun run = runDbAction db (P.insert run)
 
 storeResults :: Database -> ActionM ()
 storeResults db = do
@@ -261,17 +239,17 @@ getRun db = do
     rId <- readEither <$> param "id"
     case rId of
         Right runId -> do
-            (stats, pages) <- liftAndCatchIO (runDbAction db $ fetchRunStats [runId])
+            (stats, pages, runGroups) <- liftAndCatchIO (runDbAction db $ fetchRunStats [runId])
             -- if the list is empty, errorResponse, otherwise call sendResult with the first in the list
-            maybe (errorResponse errorTxt) (sendResult pages) (listToMaybe stats)
+            maybe (errorResponse errorTxt) (sendResult pages runGroups) (listToMaybe stats)
         Left err -> errorResponse err
   where
     errorTxt :: Text
     errorTxt = "No query result"
     -- | Transforms the SQL result into a JSON response
     --
-    sendResult list (run, stats) = do
-        json $ object ["run" .= run, "stats" .= stats, "pages" .= list]
+    sendResult list runGroups (run, stats) = do
+        json $ object ["run" .= run, "stats" .= stats, "pages" .= list, "runGroups" .= runGroups]
         status ok200
     -- | Responds with a JSON error
     --
@@ -283,19 +261,23 @@ getRun db = do
 --   The first positionin the pair is a list of (run, rollup)
 --   The second position is a reverse index of pages participating in the run {page: [run id, ...]}
 fetchRunStats ::
-       MonadIO m => [Int] -> TransactionMonad m ([(P.Entity Run, Rollup)], Map.Map Text [Key Run])
+       MonadIO m
+    => [Int]
+    -> TransactionMonad m ([(P.Entity Run, Rollup)], Map.Map Text [Key Run], [P.Entity RunGroup])
 fetchRunStats runId = do
-    let runKey = toSqlKey <$> runId
-    stats <- findRunStats runKey
-    list <- findPagesList runKey
+    let runKeys = toSqlKey <$> runId
+    stats <- findRunStats runKeys
+    list <- findPagesList runKeys
     runs <- findRuns (fmap fst stats)
+    runGroups <- findRunGroups runKeys
     return
         ( [ (run, rollup) -- Locally doing a join by the same run key
           | (sKey, rollup) <- stats
           , run@(P.Entity rKey _) <- runs
           , sKey == rKey
           ]
-        , reverseIndex list)
+        , reverseIndex list
+        , runGroups)
   where
     reverseIndex pages = Map.fromListWith (++) [(page, [key]) | (key, page) <- pages]
 
@@ -308,9 +290,10 @@ getManyRuns db = do
             result <- liftAndCatchIO (runDbAction db $ fetchRunStats allIds)
             sendResult result
   where
-    sendResult (results, pages) = do
+    sendResult (results, pages, runGroups) = do
         let buildObject (run, stats) = object ["run" .= run, "stats" .= stats]
-        json $ object ["runs" .= fmap buildObject results, "pages" .= pages]
+        json $
+            object ["runs" .= fmap buildObject results, "pages" .= pages, "runGroups" .= runGroups]
         status ok200
     -- | Responds with a JSON error
     --
@@ -370,7 +353,7 @@ readPort :: Read port => String -> port -> IO port
 readPort name defaultPort = do
     taintedPort <- lookupEnv name
     -- Reading the port from the ENV. Abort with an error on bad port
-    let varReader = maybe (error $ "Bad " <> name) id
+    let varReader = fromMaybe (error $ "Bad " <> name)
     return (maybe defaultPort (varReader . readMaybe) taintedPort)
 
 optionalParam :: (Monoid a, Parsable a) => LText.Text -> ActionM a

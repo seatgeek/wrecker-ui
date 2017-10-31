@@ -27,7 +27,7 @@ import Data.Text (Text, pack)
 import Data.Time.Clock (getCurrentTime)
 import Data.Time.ISO8601 (formatISO8601)
 import qualified Invoker as Wrecker
-import Model (Database, WreckerRun)
+import Model (Database, Key, RunGroup, WreckerRun)
 import Prelude hiding ((!!))
 import qualified Recorder
 
@@ -150,17 +150,18 @@ addToQueue name schedule testsList =
 -- | Checks wheter or not it is possible to executing the give run right now and
 -- if possible, it executes it immediately.
 tryRunningNow :: Config -> Text -> ScheduleOptions -> IO ()
-tryRunningNow config@(Config {..}) name ScheduleOptions {..} = do
+tryRunningNow config@Config {..} name opts@ScheduleOptions {..} = do
+    let secs = Wrecker.Seconds (fromMaybe 10 time) -- Run for 10 seconds if no preference was given
     canRun <- STM.atomically (markAsRunning testsList name)
     guard canRun
-    now <- getCurrentTime
+    groupId <- liftIO $ Recorder.createRunGroup db (runGroupOptions secs)
     let steps = Wrecker.Concurrency <$> createSteps
-        fTime = pack . formatISO8601 $ now
-        groupName = gName <> " - " <> fTime
-        runner = escalateWithRecorder config name time groupName
+        runner = escalateWithRecorder config name groupId secs
     job <- async (runLocalProcess localProcess $ runner steps)
     STM.atomically (updateStatus testsList name (Running $ Just job))
   where
+    runGroupOptions (Wrecker.Seconds secs) =
+        Recorder.RunGroupOptions gName "No notes" cStart cEnd sStep secs
     createSteps =
         if cStart == 1 || cStart == 0
             then tail [0,sStep .. cEnd]
@@ -172,21 +173,21 @@ tryRunningNow config@(Config {..}) name ScheduleOptions {..} = do
 escalateWithRecorder ::
        Config -- ^ The scheduler configuration
     -> Text -- ^ The test name to execute
-    -> Maybe Int -- ^ Ampunt of seconds to spend on each test client
-    -> Text -- ^ The group name to assign to this test run
+    -> Key RunGroup
+    -> Wrecker.Seconds
     -> ([Wrecker.Concurrency] -> Process Wrecker.Result)
-escalateWithRecorder Config {db, slaves} name time groupName = do
-    let secs = Wrecker.Seconds (fromMaybe 10 time) -- Run for 10 seconds if no preference was given
-        builder = Wrecker.Command name secs
-        keyGen command = liftIO (Recorder.createRun db groupName command)
-        executer = remoteWrecker slaves
-        recorder key result = liftIO (Recorder.record db key result)
-    Wrecker.escalate builder executer keyGen recorder
+escalateWithRecorder Config {db, slaves} name groupId secs =
+    Wrecker.escalate (builder secs) executer keyGen recorder
+  where
+    builder = Wrecker.Command name
+    keyGen command = liftIO (Recorder.createRun db groupId command)
+    recorder key result = liftIO (Recorder.record db key result)
+    executer = remoteWrecker slaves
 
 -- | Executes a wrecker command in the remote sleves, if any are provided. The local node will always
 --   participate in executing some of the load. If no slaves are available, the local node executes the whole run.
 remoteWrecker :: [NodeId] -> Wrecker.Command -> Process [Either String WreckerRun]
-remoteWrecker slaves command@(Wrecker.Command {concurrency}) = do
+remoteWrecker slaves command@Wrecker.Command {concurrency} = do
     thisNode <- getSelfNode
     tasks <- mapM asyncLinked (divideWork (fromList $ thisNode : slaves)) -- Execute each task remotely and async
     mapM waitFor tasks
@@ -197,7 +198,7 @@ remoteWrecker slaves command@(Wrecker.Command {concurrency}) = do
     divideWork nodes@(selfNode :| _) =
         let Wrecker.Concurrency conc_ = concurrency
             conc = fromIntegral conc_
-        in if length slaves == 0 || conc < 2000
+        in if null slaves || conc < 2000
                then [buildTask command selfNode]
                else let (first:rest) =
                             [ nodes !! (i - 1) -- Return the node at position i

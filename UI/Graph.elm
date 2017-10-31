@@ -11,10 +11,10 @@ module Graph
         , validGraphs
         , chooseGraphType
         , assignColors
-        , buildGroups
+        , assignGroupColors
         )
 
-import Data exposing (Run, Page)
+import Data exposing (Run, Page, RunGroup)
 import Date
 import Dict exposing (Dict)
 import Html exposing (..)
@@ -25,7 +25,6 @@ import Svg exposing (Svg)
 import Svg.Attributes as SvgAttr exposing (stroke, strokeDasharray, r, fill, strokeWidth, transform)
 import Svg.Attributes exposing (stroke)
 import Svg.Events as SvgEvent
-import String.Extra exposing (rightOfBack, clean)
 
 
 {-| Creates a Title alias to easier identify a string it refers to a graph title
@@ -192,60 +191,54 @@ allColors =
     ]
 
 
-{-| Finds all runs with the same group name and assigns them a color based on this
-similarity. Returns the pair (color, run) in a list.
+{-| Finds all runs with the same run group id and assigns them a color based on this
+grouping. Returns the pair (color, run) in a list.
 -}
-assignColors : List Run -> List GraphData
-assignColors runs =
-    runs
-        |> buildGroups
-        |> EList.zip allColors
-        |> List.map (\( color, ( _, runGroup ) ) -> List.map (\r -> ( color, r )) runGroup)
-        |> List.concat
-
-
-{-| Returns a List of pairs where the first in the pair is the groupName
-and the secnd is the list of runs having the same groupName.
-
-The list of groups is capped to 30, as we have no more colors to assign!
-
--}
-buildGroups : List Run -> List ( String, List Run )
-buildGroups runs =
+assignColors : List RunGroup -> List Run -> List GraphData
+assignColors groups runs =
     let
-        insertOrUpdate run currentList =
-            case currentList of
+        colorsDict =
+            groups
+                |> assignGroupColors
+                |> List.map (\( color, group ) -> ( group.id, color ))
+                |> Dict.fromList
+
+        doAssign run =
+            case Dict.get run.run.runGroupId colorsDict of
                 Nothing ->
-                    Just [ run ]
+                    Nothing
 
-                Just l ->
-                    Just (run :: l)
-
-        extractKey r =
-            r.run.groupName
-                |> rightOfBack "- "
-                |> clean
-                |> Date.fromString
-                |> Result.withDefault (Date.fromTime 0)
-                |> Date.toTime
-
-        buildDict run dict =
-            Dict.update (extractKey run) (insertOrUpdate run) dict
-
-        setGroupName ( _, aggregatedRuns ) =
-            case aggregatedRuns of
-                run :: _ ->
-                    ( run.run.groupName, aggregatedRuns )
-
-                _ ->
-                    ( "", aggregatedRuns )
+                Just color ->
+                    Just ( color, run )
     in
         runs
-            |> List.foldl buildDict Dict.empty
-            |> Dict.toList
-            |> List.reverse
+            |> List.filterMap doAssign
+
+
+{-| Takes the last 30 run groups and assigns a color to each grroup as the first int eh tuple.
+Returns the pair (color, group) in a list.
+-}
+assignGroupColors : List RunGroup -> List ( String, RunGroup )
+assignGroupColors groups =
+    let
+        toDate =
+            .created >> Date.toTime
+
+        inverseSort a b =
+            case compare (toDate a) (toDate b) of
+                LT ->
+                    GT
+
+                EQ ->
+                    EQ
+
+                GT ->
+                    LT
+    in
+        groups
+            |> List.sortWith inverseSort
             |> List.take 30
-            |> List.map setGroupName
+            |> EList.zip allColors
 
 
 graphDefinition : Title -> Maybe Graph
@@ -279,12 +272,13 @@ assembleRunData pages runs =
 plotRuns :
     Model
     -> Title
+    -> List RunGroup
     -> List Run
-    -> List String
+    -> List RunGroup
     -> Maybe Int
     -> Maybe (Dict Int Page)
     -> Html Msg
-plotRuns { hovered } graph runs filteredGroups concurrencyComparison pageStats =
+plotRuns { hovered } graph allGroups runs filteredGroups concurrencyComparison pageStats =
     let
         selectRunData graphData =
             assembleRunData pageStats graphData
@@ -295,7 +289,7 @@ plotRuns { hovered } graph runs filteredGroups concurrencyComparison pageStats =
                     xLegend
                     yLegend
                     [ scatterPlot xGetter yGetter hovered ]
-                    (runs |> assignColors |> selectRunData |> filterGroups filteredGroups)
+                    (runs |> assignColors allGroups |> selectRunData |> filterGroups filteredGroups)
 
             Just (Timeline yLegend yGetter) ->
                 let
@@ -323,7 +317,7 @@ plotRuns { hovered } graph runs filteredGroups concurrencyComparison pageStats =
                         ""
                         yLegend
                         [ linePlot dateGetter yGetter hovered ]
-                        (runData |> assignColors |> selectRunData)
+                        (runData |> assignColors allGroups |> selectRunData)
 
             Nothing ->
                 Debug.crash ("got invalid graph title: " ++ graph)
@@ -381,15 +375,19 @@ blueStroke =
     "#cfd8ea"
 
 
-filterGroups : List String -> List GraphData -> List GraphData
+filterGroups : List RunGroup -> List GraphData -> List GraphData
 filterGroups filters data =
-    case filters of
-        [] ->
-            data
+    let
+        filterIds =
+            List.map .id filters
+    in
+        case filters of
+            [] ->
+                data
 
-        _ ->
-            data
-                |> List.filter (\( _, d ) -> List.member d.run.groupName filters)
+            _ ->
+                data
+                    |> List.filter (\( _, d ) -> List.member d.run.runGroupId filterIds)
 
 
 scatterPlot :

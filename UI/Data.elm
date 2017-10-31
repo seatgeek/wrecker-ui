@@ -23,12 +23,27 @@ type alias Stats =
     }
 
 
+{-| Contains the info for a run group (a consecutive list of test runs using the same workflow)
+-}
+type alias RunGroup =
+    { id : Int
+    , groupSetId : Int
+    , title : String
+    , notes : String
+    , concurrencyStart : Int
+    , concurrencyTarget : Int
+    , rampupStep : Int
+    , runKeepTime : Int
+    , created : Date.Date
+    }
+
+
 {-| Contains the basic info for a Run done using wrecker
 -}
 type alias RunInfo =
     { created : Date.Date
     , concurrency : Int
-    , groupName : String
+    , runGroupId : Int
     , id : Int
     , match : String
     }
@@ -56,6 +71,7 @@ type alias Page =
 type alias Results =
     { runs : List Run
     , pages : Dict String (List Int)
+    , runGroups : List RunGroup
     }
 
 
@@ -63,6 +79,20 @@ type alias Results =
 ---------------------------------------------
 --- JSON Decoding
 ---------------------------------------------
+
+
+decodeRunGroup : Decode.Decoder RunGroup
+decodeRunGroup =
+    Pipeline.decode RunGroup
+        |> Pipeline.required "id" Decode.int
+        |> Pipeline.required "groupSetId" Decode.int
+        |> Pipeline.required "title" Decode.string
+        |> Pipeline.required "notes" Decode.string
+        |> Pipeline.required "concurrencyStart" Decode.int
+        |> Pipeline.required "concurrencyTarget" Decode.int
+        |> Pipeline.required "rampupStep" Decode.int
+        |> Pipeline.required "runKeepTime" Decode.int
+        |> Pipeline.required "created" (Decode.string |> Decode.andThen decodeDateTime)
 
 
 decodeRun : Decode.Decoder Run
@@ -101,7 +131,7 @@ decodeRunInfo =
     Pipeline.decode RunInfo
         |> Pipeline.required "created" (Decode.string |> Decode.andThen decodeDateTime)
         |> Pipeline.required "concurrency" Decode.int
-        |> Pipeline.required "groupName" Decode.string
+        |> Pipeline.required "runGroupId" Decode.int
         |> Pipeline.required "id" Decode.int
         |> Pipeline.required "match" Decode.string
 
@@ -111,6 +141,7 @@ decodeResults =
     Pipeline.decode Results
         |> Pipeline.required "runs" (Decode.list decodeRun)
         |> Pipeline.required "pages" (Decode.dict (Decode.list Decode.int))
+        |> Pipeline.required "runGroups" (Decode.list decodeRunGroup)
 
 
 decodeDateTime : String -> Decode.Decoder Date.Date

@@ -53,9 +53,27 @@ import GHC.Generics hiding (from)
 share
     [mkPersist sqlSettings, mkMigrate "migrateAll"]
     [persistLowerCase|
+
+  GroupSet
+    name Text
+    description Text
+    created UTCTime
+    deriving Eq Show Generic
+
+  RunGroup
+    groupSetId GroupSetId
+    title Text
+    notes Text
+    concurrencyStart Int
+    concurrencyTarget Int
+    rampupStep Int
+    runKeepTime Int
+    created UTCTime
+    deriving Eq Show Generic
+
   Run
+    runGroupId RunGroupId
     match Text
-    groupName Text
     concurrency Int
     created UTCTime
     deriving Eq Show Generic
@@ -170,6 +188,20 @@ findRuns keys =
         orderBy [asc (r ^. RunCreated)]
         return r
 
+findRunGroups :: MonadIO m => [Key Run] -> SqlReadT m [Entity RunGroup]
+findRunGroups keys =
+    select $
+    from $ \r -> do
+        where_ (r ^. RunGroupId `in_` subList_select findRunGroupIds)
+        orderBy [asc (r ^. RunGroupCreated)]
+        return r
+  where
+    findRunGroupIds =
+        from $ \r -> do
+            where_ (r ^. RunId `in_` valList keys)
+            orderBy [asc (r ^. RunCreated)]
+            return (r ^. RunRunGroupId)
+
 findPagesList :: MonadIO m => [Key Run] -> SqlReadT m [(Key Run, Text)]
 findPagesList runIds = do
     rows <-
@@ -282,9 +314,25 @@ storeRunResults runKey WreckerRun {..} = do
     _ <- P.insert fullRollup
     mapM_ (P.insert . fullPage) pages
 
+findOrCreateGroupSet :: DbMonad m => Text -> Text -> UTCTime -> DbAction m (Key GroupSet)
+findOrCreateGroupSet setName setDescription now = do
+    groupSet <-
+        select $
+        from $ \g -> do
+            where_ (g ^. GroupSetName ==. val setName)
+            limit 1
+            return g
+    if null groupSet
+        then insert $ GroupSet setName setDescription now
+        else let gs:_ = groupSet
+             in return (entityKey gs)
+
 -------------------------------------
 -- JSON conversions
 -------------------------------------
+instance ToJSON RunGroup where
+    toJSON = genericToJSON (defaultOptions {fieldLabelModifier = lcFirst . drop 8})
+
 instance ToJSON Run where
     toJSON = genericToJSON (defaultOptions {fieldLabelModifier = lcFirst . drop 3})
 

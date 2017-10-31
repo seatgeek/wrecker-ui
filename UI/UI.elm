@@ -1,7 +1,6 @@
 module Main exposing (..)
 
-import Data exposing (Run, Page, RunInfo, Results, decodeRunInfo, decodeRun, decodePage, decodeResults)
-import Date
+import Data exposing (Run, Page, RunInfo, Results, RunGroup, decodeRunInfo, decodeRun, decodePage, decodeResults)
 import Dict exposing (Dict)
 import Graph exposing (..)
 import Html exposing (..)
@@ -56,22 +55,22 @@ type PageSelection
     = PageSelection String (Dict Int Page)
 
 
-{-| The Model contains all the applicaiton state that is used to render the plot
+{-| The Model contains all the application state that is used to render the plot
 and the rest of the UI
 -}
 type alias Model =
     { runTitles : List String
-    , searchField : String
     , runs : List Run
     , pages : Dict String (List Int) -- A reverse map of the pages tested for the loaded run stats
     , graph : Title
     , graphState : Graph.Model
-    , filteredGroups : List String
+    , currentRunGroups : List RunGroup
+    , filteredGroups : List RunGroup
     , concurrencyComparison : Maybe Int
     , selectedPage : Maybe PageSelection
     , currentScreen : Screen
     , schedulerState : Scheduler.Model
-    , pollForResults : Maybe String
+    , displayTestResults : Maybe String
     }
 
 
@@ -87,21 +86,21 @@ init location =
         initialReturn =
             setRoute (Router.fromLocation location)
                 { runTitles = []
-                , searchField = ""
                 , runs = []
                 , pages = Dict.empty
                 , graph = "Mean Time / Concurrency"
                 , graphState = Graph.defaultModel
+                , currentRunGroups = []
                 , filteredGroups = []
                 , selectedPage = Nothing
                 , concurrencyComparison = Nothing
                 , currentScreen = PlotScreen
                 , schedulerState = schedulerModel
-                , pollForResults = Nothing
+                , displayTestResults = Nothing
                 }
     in
         initialReturn
-            |> command (Http.send LoadRunTitles (getRuns ""))
+            |> command (Http.send LoadRunTitles getRunsTitles)
             |> command (Cmd.map SchedulerMsg scheduleInit)
 
 
@@ -110,9 +109,7 @@ application. Each action contains a set of arguments associated with it.
 -}
 type Msg
     = SetRoute (Maybe Router.Route)
-    | SearchFieldUpdated String
-    | SearchButtonClicked
-    | LoadRunTitles (Result Http.Error (List RunInfo))
+    | LoadRunTitles (Result Http.Error (List String))
     | LoadRunStats (Result Http.Error Results)
     | LoadPageStats (Result Http.Error (List Page))
     | LoadFromLocation (Result Http.Error ( Results, String, Maybe (List Page) ))
@@ -120,8 +117,8 @@ type Msg
     | GraphMsg Graph.Msg
     | RunTitleClicked String
     | ChangeGraphType String
-    | ToggleFilterGroup String
-    | ShowOnlyGroup String
+    | ToggleFilterGroup Int
+    | ShowOnlyGroup Int
     | PageNameClicked String
     | ChangeConcurrencyComparison Int
     | ChangeScreen Screen
@@ -137,7 +134,7 @@ type Msg
 
 subscriptions : Model -> Sub Msg
 subscriptions model =
-    case model.pollForResults of
+    case model.displayTestResults of
         Nothing ->
             Sub.none
 
@@ -158,26 +155,11 @@ update msg model =
             changeScreen screen model
                 |> command (Router.modifyUrl (screenToRoute screen model))
 
-        SearchFieldUpdated name ->
-            -- When writing anything in the search field we just need to store it.
-            -- no other changes are required
-            updateSearchField name model
-                |> return
-
-        SearchButtonClicked ->
-            -- When the search button is clicked, then we need to reset the previous
-            -- results state and trigger a HTTP request to get the results.
-            resetRunsState model
-                |> startPollingForResults model.searchField
-                |> return
-                |> command (Http.send LoadRunStats (getManyRuns model.searchField))
-
         RunTitleClicked name ->
             -- Similarly to clicking the search button, when clicming on one of the test
             -- titles, we need to reset the previous results and then trigger the same
             -- HTTP request to fetch new results.
             model
-                |> updateSearchField name
                 |> startPollingForResults name
                 |> resetRunsState
                 |> return
@@ -189,17 +171,17 @@ update msg model =
             debugError model "LoadRunTitles" error
 
         LoadRunTitles (Ok runs) ->
-            return { model | runTitles = extractTitles runs }
+            return { model | runTitles = runs }
 
         LoadRunStats (Err error) ->
             -- If there was an error loading the run stats, we just log it in the console
             debugError model "LoadRunStats" error
 
-        LoadRunStats (Ok { runs, pages }) ->
+        LoadRunStats (Ok { runs, pages, runGroups }) ->
             -- But if we could successfully load the run stats, then we store the results and
             -- calculate run groups that need be shown
             { model | selectedPage = Nothing }
-                |> setRuns runs
+                |> setRuns runs runGroups
                 |> setPageMap pages
                 |> return
 
@@ -227,18 +209,18 @@ update msg model =
             -- ... but an error happened
             debugError model "LoadFromLocation" error
 
-        LoadFromLocation (Ok ( { runs, pages }, page, Just pageStats )) ->
+        LoadFromLocation (Ok ( { runs, pages, runGroups }, page, Just pageStats )) ->
             -- This is the case when we want to re-construct the state from the browser URL
             model
-                |> setRuns runs
+                |> setRuns runs runGroups
                 |> setPageMap pages
                 |> setPageSelection page pageStats
                 |> return
 
-        LoadFromLocation (Ok ( { runs, pages }, _, Nothing )) ->
+        LoadFromLocation (Ok ( { runs, pages, runGroups }, _, Nothing )) ->
             -- This is the case when we want to re-construct the state from the browser URL
             { model | selectedPage = Nothing }
-                |> setRuns runs
+                |> setRuns runs runGroups
                 |> setPageMap pages
                 |> return
 
@@ -276,20 +258,22 @@ update msg model =
                     |> return
                     |> andThen updateTheUrl
 
-        ToggleFilterGroup group ->
+        ToggleFilterGroup groupId ->
             -- If a group name is clicked, then we need to hide its corresponding points in the graph.
             -- When it is clicked for a second time, then we show them again.
             -- We also need to make sure that there is always at least one group visible in the plot.
             let
                 filteredGroups =
-                    if List.member group model.filteredGroups then
-                        List.filter ((/=) group) model.filteredGroups
+                    if List.filter (\g -> g.id == groupId) model.filteredGroups /= [] then
+                        List.filter (\g -> g.id /= groupId) model.filteredGroups
                     else
-                        group :: model.filteredGroups
+                        List.append
+                            (List.filter (\g -> g.id == groupId) model.currentRunGroups)
+                            model.filteredGroups
 
                 newFilteredGroups =
                     if List.isEmpty filteredGroups then
-                        defaultFilteredGroups model.runs
+                        model.currentRunGroups
                     else
                         filteredGroups
             in
@@ -298,7 +282,7 @@ update msg model =
         ShowOnlyGroup group ->
             -- If a group name is doubleclicked, then we need to only show its corresponding points in the graph
             -- and hide everything else.
-            return { model | filteredGroups = [ group ] }
+            return { model | filteredGroups = List.filter (\g -> g.id == group) model.currentRunGroups }
 
         PageNameClicked page ->
             -- When a page URL is clicked in the list, we want update the plot to show the statistics for
@@ -361,13 +345,13 @@ setRoute maybeRoute model =
             changeScreen ScheduleRunScreen model
 
         Just (Router.SimplePlot plotIndex maybeTestName maybePageName) ->
-            { model | pollForResults = maybeTestName }
+            { model | displayTestResults = maybeTestName }
                 |> setGraphByIndex plotIndex
                 |> return
                 |> command (loadRunThenPage LoadFromLocation maybeTestName maybePageName)
 
         Just (Router.ComparisonPlot plotIndex level maybeTestName maybePageName) ->
-            { model | concurrencyComparison = Just level, pollForResults = maybeTestName }
+            { model | concurrencyComparison = Just level, displayTestResults = maybeTestName }
                 |> setGraphByIndex plotIndex
                 |> return
                 |> command (loadRunThenPage LoadFromLocation maybeTestName maybePageName)
@@ -385,14 +369,9 @@ changeScreen screen model =
                     Cmd.map SchedulerMsg <| Tuple.second Scheduler.init
 
                 PlotScreen ->
-                    Http.send LoadRunTitles (getRuns "")
+                    Http.send LoadRunTitles getRunsTitles
     in
         ( { model | currentScreen = screen }, effect )
-
-
-updateSearchField : String -> Model -> Model
-updateSearchField name model =
-    { model | searchField = name }
 
 
 resetRunsState : Model -> Model
@@ -416,11 +395,12 @@ setGraphByIndex index model =
         { model | graph = Maybe.withDefault model.graph graph }
 
 
-setRuns : List Run -> Model -> Model
-setRuns runs model =
+setRuns : List Run -> List RunGroup -> Model -> Model
+setRuns runs runGroups model =
     { model
         | runs = runs
-        , filteredGroups = defaultFilteredGroups runs
+        , currentRunGroups = runGroups
+        , filteredGroups = runGroups
     }
 
 
@@ -445,7 +425,7 @@ setPageSelection page pages model =
 
 startPollingForResults : String -> Model -> Model
 startPollingForResults testName model =
-    { model | pollForResults = Just testName }
+    { model | displayTestResults = Just testName }
 
 
 debugError : Model -> String -> a -> ( Model, Cmd msg )
@@ -518,18 +498,20 @@ buildPlotRoute model =
         level =
             Maybe.withDefault 0 model.concurrencyComparison
     in
-        if String.trim model.searchField == "" then
-            Router.Home
-        else
-            case graphIndex of
-                Nothing ->
-                    Router.Home
+        case model.displayTestResults of
+            Nothing ->
+                Router.Home
 
-                Just ( index, Scatter _ _ _ _ ) ->
-                    Router.SimplePlot index (Just model.searchField) page
+            Just testName ->
+                case graphIndex of
+                    Nothing ->
+                        Router.Home
 
-                Just ( index, _ ) ->
-                    Router.ComparisonPlot index level (Just model.searchField) page
+                    Just ( index, Scatter _ _ _ _ ) ->
+                        Router.SimplePlot index model.displayTestResults page
+
+                    Just ( index, _ ) ->
+                        Router.ComparisonPlot index level model.displayTestResults page
 
 
 updateTheUrl : Model -> ( Model, Cmd Msg )
@@ -543,13 +525,12 @@ updateTheUrl m =
 -----------------------
 
 
-{-| Returns a Request object that can be used to load a list of RunInfo. This is
-used for displaying the list of runs that can be selected in the menu.
+{-| Returns a Request object that can be used to load the list of runnable tests.
 -}
-getRuns : String -> Http.Request (List RunInfo)
-getRuns name =
-    Http.get ("/runs?match=" ++ (Http.encodeUri name))
-        (Decode.field "runs" (Decode.list decodeRunInfo))
+getRunsTitles : Http.Request (List String)
+getRunsTitles =
+    Http.get "/test-list"
+        (Decode.field "tests" (Decode.dict Decode.string |> Decode.map Dict.keys))
 
 
 {-| Returns a Request object that can be used to load a list of run statistics
@@ -582,32 +563,6 @@ getPageStats ids page =
 
 
 
------------------------
--- Helper functions
------------------------
-
-
-{-| Returns the list of groups names that shoudl be selected by default when
-displaying the plot.
--}
-defaultFilteredGroups : List Run -> List String
-defaultFilteredGroups runs =
-    runs
-        |> buildGroups
-        |> List.map Tuple.first
-
-
-{-| Gets the unique run tiles from a list of Runs
--}
-extractTitles : List RunInfo -> List String
-extractTitles runs =
-    runs
-        |> List.map .match
-        |> EList.unique
-        |> List.sort
-
-
-
 -----------------------------------
 -- View Logic
 -----------------------------------
@@ -619,7 +574,7 @@ view : Model -> Html Msg
 view model =
     div []
         [ div [ class "view" ]
-            [ div [ class "view--left" ] [ leftPanel model.currentScreen model.searchField model.runTitles ]
+            [ div [ class "view--left" ] [ leftPanel model.currentScreen model.displayTestResults model.runTitles ]
             , div [ class "view--right" ]
                 [ case model.currentScreen of
                     PlotScreen ->
@@ -635,7 +590,7 @@ view model =
 
 {-| Renders the left panel (where the search button and the list of runs is)
 -}
-leftPanel : Screen -> String -> List String -> Html Msg
+leftPanel : Screen -> Maybe String -> List String -> Html Msg
 leftPanel screen defaultTitle runTitles =
     let
         bottomItems =
@@ -645,22 +600,13 @@ leftPanel screen defaultTitle runTitles =
 
                 PlotScreen ->
                     [ div [ class "view-header__search" ]
-                        [ input
-                            [ type_ "text"
-                            , name "run_name"
-                            , placeholder "Search Run"
-                            , value defaultTitle
-                            , onEnter SearchButtonClicked
-                            , onInput SearchFieldUpdated
-                            ]
-                            []
-                        , button [ onClick SearchButtonClicked ] [ text "go" ]
+                        [ ul
+                            [ class "view-header__runs" ]
+                            (runTitles
+                                |> List.sortWith natSort
+                                |> List.map (runListItem defaultTitle)
+                            )
                         ]
-                    , ul [ class "view-header__runs" ]
-                        (runTitles
-                            |> List.sortWith natSort
-                            |> List.map (runListItem defaultTitle)
-                        )
                     ]
     in
         header [ class "view-header" ]
@@ -675,11 +621,11 @@ leftPanel screen defaultTitle runTitles =
             )
 
 
-runListItem : String -> String -> Html Msg
+runListItem : Maybe String -> String -> Html Msg
 runListItem selected title =
     let
         classes =
-            [ ( "selected", selected == title ) ]
+            [ ( "selected", selected == Just title ) ]
     in
         li [ onClick (RunTitleClicked title) ] [ a [ classList classes ] [ text title ] ]
 
@@ -699,6 +645,7 @@ rightPlotPanel model =
                         plotRuns
                             model.graphState
                             model.graph
+                            model.currentRunGroups
                             model.runs
                             model.filteredGroups
                             model.concurrencyComparison
@@ -711,11 +658,11 @@ rightPlotPanel model =
 {-| Renders the right column where the graph selector and lists of pages reside
 -}
 rightmostPanel : Model -> Html Msg
-rightmostPanel { graph, filteredGroups, runs, pages, concurrencyComparison, selectedPage } =
+rightmostPanel { graph, currentRunGroups, filteredGroups, runs, pages, concurrencyComparison, selectedPage } =
     div []
         [ select [ onChange ChangeGraphType ] (List.map (renderGraphItem graph) validGraphs)
         , renderConcurrencySelector concurrencyComparison runs
-        , renderGroups filteredGroups runs
+        , renderGroups currentRunGroups filteredGroups
         , h4 [] [ text "Pages" ]
         , renderPageList (extractSelectedPage selectedPage) pages
         , div [ class "scrollFader" ] []
@@ -747,22 +694,16 @@ renderConcurrencySelector current runs =
                 select [ onChangeInt ChangeConcurrencyComparison ] (List.map buildOption levels)
 
 
-renderGroups : List String -> List Run -> Html Msg
-renderGroups filteredGroups runs =
-    let
-        groups =
-            runs
-                |> assignColors
-                |> EList.uniqueBy Tuple.first
-    in
-        ul []
-            (List.map
-                (renderGroupItem filteredGroups)
-                groups
-            )
+renderGroups : List RunGroup -> List RunGroup -> Html Msg
+renderGroups allGroups filteredGroups =
+    ul []
+        (List.map
+            (renderGroupItem filteredGroups)
+            (assignGroupColors allGroups)
+        )
 
 
-renderGroupItem : List String -> GraphData -> Html Msg
+renderGroupItem : List RunGroup -> ( String, RunGroup ) -> Html Msg
 renderGroupItem filtered ( color, runGroup ) =
     let
         isFiltered =
@@ -772,19 +713,19 @@ renderGroupItem filtered ( color, runGroup ) =
 
                 _ ->
                     filtered
-                        |> List.filter (\g -> g == runGroup.run.groupName)
+                        |> List.filter ((==) runGroup)
                         |> List.isEmpty
     in
         li
             [ style [ ( "cursor", "pointer" ) ]
             , classList [ ( "grayed-out", isFiltered ) ]
-            , onClick (ToggleFilterGroup runGroup.run.groupName)
-            , onDoubleClick (ShowOnlyGroup runGroup.run.groupName)
+            , onClick (ToggleFilterGroup runGroup.id)
+            , onDoubleClick (ShowOnlyGroup runGroup.id)
             ]
             [ span
                 [ style [ ( "color", color ), ( "font-size", "25px" ) ] ]
                 [ text "●", text " " ]
-            , text runGroup.run.groupName
+            , text runGroup.title
             ]
 
 

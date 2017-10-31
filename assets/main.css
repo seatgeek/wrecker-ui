@@ -69,11 +69,12 @@ a:hover {
 
 .view-header__runs {
 	list-style: none;
-	font-size: 14px;
+	font-size: 12px;
+	text-align: left;
 }
 
 .view-header__runs li {
-	margin-bottom: 5px;
+	margin-bottom: 7px;
 }
 
 /* View example */
