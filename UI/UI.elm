@@ -18,6 +18,7 @@ import Task
 import Time
 import Tuple
 import Util exposing (natSort, return)
+import ServerState
 
 
 {-| Bolilerplate: Wires the application together
@@ -59,7 +60,7 @@ type PageSelection
 and the rest of the UI
 -}
 type alias Model =
-    { runTitles : List String
+    { serverState : ServerState.State
     , runs : List Run
     , pages : Dict String (List Int) -- A reverse map of the pages tested for the loaded run stats
     , graph : Title
@@ -83,9 +84,12 @@ init location =
         ( schedulerModel, scheduleInit ) =
             Scheduler.init
 
+        ( serverState, serverStateInit ) =
+            ServerState.init
+
         initialReturn =
             setRoute (Router.fromLocation location)
-                { runTitles = []
+                { serverState = serverState
                 , runs = []
                 , pages = Dict.empty
                 , graph = "Mean Time / Concurrency"
@@ -100,8 +104,8 @@ init location =
                 }
     in
         initialReturn
-            |> command (Http.send LoadRunTitles getRunsTitles)
             |> command (Cmd.map SchedulerMsg scheduleInit)
+            |> command (Cmd.map ServerStateMsg serverStateInit)
 
 
 {-| Contains a list of all the possible actions that can be executed within the
@@ -109,7 +113,6 @@ application. Each action contains a set of arguments associated with it.
 -}
 type Msg
     = SetRoute (Maybe Router.Route)
-    | LoadRunTitles (Result Http.Error (List String))
     | LoadRunStats (Result Http.Error Results)
     | LoadPageStats (Result Http.Error (List Page))
     | LoadFromLocation (Result Http.Error ( Results, String, Maybe (List Page) ))
@@ -123,6 +126,7 @@ type Msg
     | ChangeConcurrencyComparison Int
     | ChangeScreen Screen
     | SchedulerMsg Scheduler.Msg
+    | ServerStateMsg ServerState.Msg
     | PollForResults String
 
 
@@ -165,13 +169,6 @@ update msg model =
                 |> return
                 |> command (Http.send LoadRunStats (getManyRuns name))
                 |> andThen updateTheUrl
-
-        LoadRunTitles (Err error) ->
-            -- If there was an error loading the run titles, we just log it in the console
-            debugError model "LoadRunTitles" error
-
-        LoadRunTitles (Ok runs) ->
-            return { model | runTitles = runs }
 
         LoadRunStats (Err error) ->
             -- If there was an error loading the run stats, we just log it in the console
@@ -317,10 +314,29 @@ update msg model =
 
         SchedulerMsg sMsg ->
             let
-                ( m, c ) =
-                    Scheduler.update sMsg model.schedulerState
+                ( m, c, reloadServerState ) =
+                    Scheduler.update
+                        model.serverState.groupSets
+                        sMsg
+                        model.schedulerState
+
+                effect =
+                    Cmd.map SchedulerMsg c
+
+                allEffects =
+                    if reloadServerState then
+                        Cmd.batch [ effect, Cmd.map ServerStateMsg <| Tuple.second ServerState.init ]
+                    else
+                        effect
             in
-                ( { model | schedulerState = m }, Cmd.map SchedulerMsg c )
+                ( { model | schedulerState = m }, allEffects )
+
+        ServerStateMsg sMsg ->
+            let
+                ( m, c ) =
+                    ServerState.update sMsg model.serverState
+            in
+                ( { model | serverState = m }, Cmd.map ServerStateMsg c )
 
         PollForResults name ->
             return model
@@ -330,6 +346,7 @@ update msg model =
                         (Just name)
                         (model.selectedPage |> Maybe.map (\(PageSelection n _) -> n))
                     )
+                |> command (Cmd.map ServerStateMsg <| Tuple.second ServerState.init)
 
 
 setRoute : Maybe Router.Route -> Model -> ( Model, Cmd Msg )
@@ -369,9 +386,12 @@ changeScreen screen model =
                     Cmd.map SchedulerMsg <| Tuple.second Scheduler.init
 
                 PlotScreen ->
-                    Http.send LoadRunTitles getRunsTitles
+                    Cmd.none
+
+        allEffects =
+            Cmd.batch [ effect, Cmd.map ServerStateMsg <| Tuple.second ServerState.init ]
     in
-        ( { model | currentScreen = screen }, effect )
+        ( { model | currentScreen = screen }, allEffects )
 
 
 resetRunsState : Model -> Model
@@ -574,7 +594,11 @@ view : Model -> Html Msg
 view model =
     div []
         [ div [ class "view" ]
-            [ div [ class "view--left" ] [ leftPanel model.currentScreen model.displayTestResults model.runTitles ]
+            [ div [ class "view--left" ]
+                [ leftPanel model.currentScreen
+                    model.displayTestResults
+                    model.serverState.testList
+                ]
             , div [ class "view--right" ]
                 [ case model.currentScreen of
                     PlotScreen ->
@@ -582,16 +606,19 @@ view model =
 
                     ScheduleRunScreen ->
                         Html.map SchedulerMsg <|
-                            Scheduler.view model.schedulerState
+                            Scheduler.view
+                                model.serverState.testList
+                                model.serverState.groupSets
+                                model.schedulerState
                 ]
             ]
         ]
 
 
-{-| Renders the left panel (where the search button and the list of runs is)
+{-| Renders the left panel (where the list of tests is)
 -}
-leftPanel : Screen -> Maybe String -> List String -> Html Msg
-leftPanel screen defaultTitle runTitles =
+leftPanel : Screen -> Maybe String -> ServerState.TestList -> Html Msg
+leftPanel screen defaultTitle (ServerState.TestList runTitles) =
     let
         bottomItems =
             case screen of
@@ -603,7 +630,7 @@ leftPanel screen defaultTitle runTitles =
                         [ ul
                             [ class "view-header__runs" ]
                             (runTitles
-                                |> List.sortWith natSort
+                                |> Dict.toList
                                 |> List.map (runListItem defaultTitle)
                             )
                         ]
@@ -621,13 +648,24 @@ leftPanel screen defaultTitle runTitles =
             )
 
 
-runListItem : Maybe String -> String -> Html Msg
-runListItem selected title =
+runListItem : Maybe String -> ( String, ServerState.RunStatus ) -> Html Msg
+runListItem selected ( title, status ) =
     let
         classes =
             [ ( "selected", selected == Just title ) ]
+
+        indicator =
+            case status of
+                ServerState.Running ->
+                    text " ▶️"
+
+                ServerState.Done ->
+                    text " ✅"
+
+                _ ->
+                    text ""
     in
-        li [ onClick (RunTitleClicked title) ] [ a [ classList classes ] [ text title ] ]
+        li [ onClick (RunTitleClicked title) ] [ a [ classList classes ] [ text title, indicator ] ]
 
 
 {-| Renders the right panel (where the plot and other info are)

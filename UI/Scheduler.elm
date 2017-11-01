@@ -8,28 +8,8 @@ import String.Extra exposing (fromInt)
 import Util exposing (natSort)
 import Http
 import Json.Decode as Decode
-import Json.Decode.Pipeline as Pipeline
-import Return exposing (command, andThen, mapCmd)
-import Util exposing (return)
 import Data exposing (GroupSet, decodeGroupSet)
-import Date
-
-
-{-| Wrecker-UI is able to schedule new tests from the iterface. Test Runs can
-have any of the following statuses as reported by the server.
--}
-type RunStatus
-    = Running
-    | Done
-    | Scheduled
-    | NotYet
-
-
-{-| Represents the list of possible tests that can be run in the server, and
-their corresponding latest known status.
--}
-type TestList
-    = TestList (Dict String RunStatus)
+import ServerState exposing (TestList(..), RunStatus(..))
 
 
 {-| It is possibible to parametrize test runs in the server. This type contains the fields
@@ -76,8 +56,6 @@ type Msg
     | GroupSetDescriptionChanged String
     | GroupSetSaveClicked
     | GroupSetSent (Result Http.Error Decode.Value)
-    | LoadTestSchedule (Result Http.Error TestList)
-    | LoadGroupSets (Result Http.Error (List GroupSet))
     | SchedulerFieldChanged SchedulerField String
     | SchedulerGroupSetIdSet Int
     | ScheduleTestClicked
@@ -85,9 +63,7 @@ type Msg
 
 
 type alias Model =
-    { testList : TestList
-    , groupSets : List GroupSet
-    , schedulerOptions : Maybe SchedulerOptions
+    { schedulerOptions : Maybe SchedulerOptions
     , showGroupsetForm : Bool
     , groupSetOptions : GroupSetOptions
     , groupSetSaving : Bool
@@ -96,9 +72,7 @@ type alias Model =
 
 defaultModel : Model
 defaultModel =
-    { testList = TestList Dict.empty
-    , groupSets = []
-    , schedulerOptions = Nothing
+    { schedulerOptions = Nothing
     , showGroupsetForm = False
     , groupSetOptions = GroupSetOptions "" ""
     , groupSetSaving = False
@@ -107,31 +81,12 @@ defaultModel =
 
 init : ( Model, Cmd Msg )
 init =
-    defaultModel
-        |> return
-        |> command (Http.send LoadTestSchedule getTestList)
-        |> command (Http.send LoadGroupSets getGroupSets)
+    ( defaultModel, Cmd.none )
 
 
-update : Msg -> Model -> ( Model, Cmd Msg )
-update msg model =
+update : List GroupSet -> Msg -> Model -> ( Model, Cmd Msg, Bool )
+update groupSets msg model =
     case msg of
-        LoadTestSchedule (Err error) ->
-            -- If there was an error loading the test schedule, we just log it in the console
-            ( Debug.log (toString error) model, Cmd.none )
-
-        LoadTestSchedule (Ok tests) ->
-            -- After getting the ajax results for the test schedule we need do nothing else but store them
-            return { model | testList = tests }
-
-        LoadGroupSets (Err error) ->
-            -- If there was an error loading the test schedule, we just log it in the console
-            ( Debug.log (toString error) model, Cmd.none )
-
-        LoadGroupSets (Ok sets) ->
-            -- After getting the ajax results for the test schedule we need do nothing else but store them
-            return { model | groupSets = sets |> List.sortBy (.created >> Date.toTime) }
-
         TestTitleClicked title ->
             -- In the Scheduling view, when the user clicks a test title, we populate the default
             -- scheduling options to show in the form.
@@ -139,9 +94,9 @@ update msg model =
                 schedulerOptions =
                     model.schedulerOptions
                         |> Maybe.map (\s -> { s | testTitle = title })
-                        |> Maybe.withDefault (defaultOptions title model.groupSets)
+                        |> Maybe.withDefault (defaultOptions title groupSets)
             in
-                return { model | schedulerOptions = Just schedulerOptions, showGroupsetForm = False }
+                ( { model | schedulerOptions = Just schedulerOptions, showGroupsetForm = False }, Cmd.none, False )
 
         SchedulerFieldChanged field value ->
             -- This is a catch-all for any changes done to the fields in the scheduling options form.
@@ -152,7 +107,7 @@ update msg model =
                     model.schedulerOptions
                         |> Maybe.map (updateOptions field value)
             in
-                return { model | schedulerOptions = schedulerOptions }
+                ( { model | schedulerOptions = schedulerOptions }, Cmd.none, False )
 
         SchedulerGroupSetIdSet id ->
             let
@@ -160,7 +115,7 @@ update msg model =
                     model.schedulerOptions
                         |> Maybe.map (\opts -> { opts | groupSetId = Just id })
             in
-                return { model | schedulerOptions = schedulerOptions }
+                ( { model | schedulerOptions = schedulerOptions }, Cmd.none, False )
 
         ScheduleTestClicked ->
             -- Once the schedule test button is clicked, we take the scheduling options record and post it
@@ -171,7 +126,7 @@ update msg model =
                         |> Maybe.map (\o -> Http.send ScheduleTestSent (postTestSchedule o))
                         |> Maybe.withDefault Cmd.none
             in
-                ( model, effect )
+                ( model, effect, False )
 
         ScheduleTestSent (Err err) ->
             -- If we got an error when sending the test to the scheduler, we log the error, but also
@@ -180,31 +135,29 @@ update msg model =
                 _ =
                     Debug.log "ScheduleTestSent" err
             in
-                return { model | schedulerOptions = Nothing }
+                ( { model | schedulerOptions = Nothing }, Cmd.none, False )
 
         ScheduleTestSent _ ->
             -- If the test is created successfully in the scheduler, we re-load the scheduler information
             -- from the server in order to reflect the new status in the list of tests.
-            { model | schedulerOptions = Nothing }
-                |> return
-                |> command (Http.send LoadTestSchedule getTestList)
+            ( { model | schedulerOptions = Nothing }, Cmd.none, True )
 
         GroupSetButtonClicked ->
-            return { model | showGroupsetForm = True }
+            ( { model | showGroupsetForm = True }, Cmd.none, False )
 
         GroupSetNameChanged name ->
             let
                 groupSetOptions =
                     model.groupSetOptions
             in
-                return { model | groupSetOptions = { groupSetOptions | name = name } }
+                ( { model | groupSetOptions = { groupSetOptions | name = name } }, Cmd.none, False )
 
         GroupSetDescriptionChanged desc ->
             let
                 groupSetOptions =
                     model.groupSetOptions
             in
-                return { model | groupSetOptions = { groupSetOptions | description = desc } }
+                ( { model | groupSetOptions = { groupSetOptions | description = desc } }, Cmd.none, False )
 
         GroupSetSaveClicked ->
             -- Once the schedule save button is clicked, we take the group set options record and post it
@@ -222,7 +175,7 @@ update msg model =
                     else
                         Cmd.none
             in
-                ( { model | groupSetSaving = True }, effect )
+                ( { model | groupSetSaving = True }, effect, False )
 
         GroupSetSent (Err err) ->
             -- If we got an error when sending the test to the scheduler, we log the error, but also
@@ -231,30 +184,15 @@ update msg model =
                 _ =
                     Debug.log "GroupSetSent" err
             in
-                return { model | groupSetSaving = False }
+                ( { model | groupSetSaving = False }, Cmd.none, False )
 
         GroupSetSent _ ->
-            -- If the gorup set is created successfully in the scheduler, we re-load the list of group sets
+            -- If the group set is created successfully in the scheduler, we re-load the list of group sets
             -- from the server.
-            { model | groupSetOptions = GroupSetOptions "" "", showGroupsetForm = False, groupSetSaving = False }
-                |> return
-                |> command (Http.send LoadGroupSets getGroupSets)
-
-
-{-| Returns a Request object that can be used to load the list of tests titles. This is
-used for displaying the list of runs that can be selected when scheduling a Run.
--}
-getTestList : Http.Request TestList
-getTestList =
-    Http.get "/test-list" decodeTestList
-
-
-{-| Returns a Request object that can be used to load the list of group sets. This is
-used for displaying the list of sets that can be used to group test runs.
--}
-getGroupSets : Http.Request (List GroupSet)
-getGroupSets =
-    Http.get "/group-sets" (Decode.at [ "groupSets" ] (Decode.list decodeGroupSet))
+            ( { model | groupSetOptions = GroupSetOptions "" "", showGroupsetForm = False, groupSetSaving = False }
+            , Cmd.none
+            , True
+            )
 
 
 postTestSchedule : SchedulerOptions -> Http.Request Decode.Value
@@ -327,8 +265,8 @@ updateOptions field value opts =
 --------------------
 
 
-view : Model -> Html Msg
-view { testList, schedulerOptions, groupSets, showGroupsetForm, groupSetOptions } =
+view : TestList -> List GroupSet -> Model -> Html Msg
+view testList groupSets { schedulerOptions, showGroupsetForm, groupSetOptions } =
     let
         testNames (TestList list) =
             list
@@ -343,6 +281,7 @@ view { testList, schedulerOptions, groupSets, showGroupsetForm, groupSetOptions 
         div [ class "view-plot view-plot__closed" ]
             [ div [ class "view-plot--left" ]
                 [ div [ class "group-set-button" ] [ a [ onClick GroupSetButtonClicked ] [ text "⛱ Add GroupSet" ] ]
+                , h4 [] [ text "...or schedule a test 👩\x200D🔬" ]
                 , ul []
                     (List.map (buildTestItems TestTitleClicked active) (testNames testList))
                 ]
@@ -490,38 +429,3 @@ renderGroupSetForm opts =
                 [ button buttonOpts [ text "Save Group" ]
                 ]
             ]
-
-
-
---------------------
--- JSON
---------------------
-
-
-decodeTestList : Decode.Decoder TestList
-decodeTestList =
-    Pipeline.decode TestList
-        |> Pipeline.required "tests" (Decode.dict decodeRunStatus)
-
-
-decodeRunStatus : Decode.Decoder RunStatus
-decodeRunStatus =
-    Decode.string
-        |> Decode.andThen
-            (\s ->
-                case s of
-                    "running" ->
-                        Decode.succeed Running
-
-                    "done" ->
-                        Decode.succeed Done
-
-                    "scheduled" ->
-                        Decode.succeed Scheduled
-
-                    "none" ->
-                        Decode.succeed NotYet
-
-                    _ ->
-                        Decode.fail ("Could not decode " ++ s ++ " as a RunStatus")
-            )
