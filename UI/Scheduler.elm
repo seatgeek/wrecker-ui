@@ -39,7 +39,8 @@ type alias SchedulerOptions =
     , concurrencyStart : Int
     , concurrencyEnd : Int
     , stepSize : Int
-    , runTime : Maybe Int
+    , runTime : Int
+    , notes : String
     }
 
 
@@ -53,6 +54,7 @@ type SchedulerField
     | ConcurrencyEnd
     | StepSize
     | RunTime
+    | Notes
 
 
 type Msg
@@ -158,11 +160,12 @@ postTestSchedule options =
         body =
             Http.multipartBody
                 [ Http.stringPart "testTitle" options.testTitle
+                , Http.stringPart "notes" options.notes
                 , Http.stringPart "groupName" options.annotationTitle
                 , Http.stringPart "concurrencyStart" (fromInt options.concurrencyStart)
                 , Http.stringPart "concurrencyEnd" (fromInt options.concurrencyEnd)
                 , Http.stringPart "stepSize" (fromInt options.stepSize)
-                , Http.stringPart "runTime" (options.runTime |> Maybe.map fromInt |> Maybe.withDefault "")
+                , Http.stringPart "runTime" (options.runTime |> fromInt)
                 ]
     in
         Http.post "/test-list" body Decode.value
@@ -170,7 +173,7 @@ postTestSchedule options =
 
 defaultOptions : String -> SchedulerOptions
 defaultOptions title =
-    SchedulerOptions title "" 10 300 10 Nothing
+    SchedulerOptions title "" 10 300 10 10 "No Notes"
 
 
 updateOptions : SchedulerField -> String -> SchedulerOptions -> SchedulerOptions
@@ -178,6 +181,9 @@ updateOptions field value opts =
     case field of
         AnnotationTitle ->
             { opts | annotationTitle = value }
+
+        Notes ->
+            { opts | notes = value }
 
         ConcurrencyStart ->
             { opts | concurrencyStart = Result.withDefault opts.concurrencyStart (String.toInt value) }
@@ -189,7 +195,7 @@ updateOptions field value opts =
             { opts | stepSize = Result.withDefault opts.stepSize (String.toInt value) }
 
         RunTime ->
-            { opts | runTime = String.toInt value |> Result.toMaybe }
+            { opts | runTime = String.toInt value |> Result.withDefault opts.runTime }
 
 
 view : Model -> Html Msg
@@ -210,7 +216,7 @@ view { testList, schedulerOptions } =
                 [ ul []
                     (List.map (buildTestItems TestTitleClicked active) (testNames testList))
                 ]
-            , div [ class "view-plot--right" ]
+            , div [ class "view-plot--right view-plot--right__wide" ]
                 [ case schedulerOptions of
                     Nothing ->
                         text ""
@@ -246,12 +252,20 @@ renderOptions options =
     let
         duration =
             options.runTime
-                |> Maybe.map fromInt
-                |> Maybe.withDefault ""
+                |> fromInt
+
+        emptyAnnotation =
+            String.trim options.annotationTitle == ""
+
+        buttonOpts =
+            if emptyAnnotation then
+                []
+            else
+                [ onClick ScheduleTestClicked ]
     in
         div [ class "view-plot--right__concurrency" ]
-            [ label []
-                [ span [] [ text "Test Annotation" ]
+            [ label [ classList [ ( "field-error", emptyAnnotation ) ] ]
+                [ span [] [ text "Test Annotation *" ]
                 , input [ onInput (SchedulerFieldChanged AnnotationTitle), placeholder "E.g. Migrated to PHP 7" ] []
                 ]
             , label []
@@ -271,7 +285,20 @@ renderOptions options =
                 , input [ onInput (SchedulerFieldChanged RunTime), type_ "number", value duration ] []
                 ]
             , label []
-                [ button [ onClick ScheduleTestClicked ] [ text "Schedule Test" ]
+                [ span [ style [ ( "width", "100%" ) ] ] [ text "Test Notes (Markdown will be rendered)" ]
+                , textarea
+                    [ onInput (SchedulerFieldChanged Notes)
+                    , value (options.notes)
+                    , rows 20
+                    , style
+                        [ ( "width", "640px" )
+                        , ( "margin-top", "10px" )
+                        ]
+                    ]
+                    []
+                ]
+            , label []
+                [ button buttonOpts [ text "Schedule Test" ]
                 ]
             ]
 
