@@ -22,15 +22,16 @@ import qualified System.Directory as Dir
 import System.Environment (lookupEnv)
 import Text.Read (readMaybe)
 import Web.Scotty
+import Data.Time.Clock (getCurrentTime)
 
 import qualified Database.Persist as P
 import qualified Database.Persist.Sql as Sql
 import Model
-       (Database, DbBackend(..), Key, LogLevel(..), Page(..), Rollup(..),
-        Run(..), RunGroup, TransactionMonad, WreckerRun(..), findPageStats,
-        findPagesList, findRunGroups, findRunStats, findRuns,
-        findRunsByMatch, runDbAction, runMigrations, storeRunResults,
-        withDb)
+       (Database, DbBackend(..), GroupSet(..), Key, LogLevel(..),
+        Page(..), Rollup(..), Run(..), RunGroup, TransactionMonad,
+        WreckerRun(..), findGroupSetsByName, findPageStats, findPagesList,
+        findRunGroups, findRunStats, findRuns, findRunsByMatch,
+        runDbAction, runMigrations, storeRunResults, withDb)
 
 import Control.Distributed.Process (NodeId(..), Process)
 import qualified Control.Distributed.Process.Backend.SimpleLocalnet
@@ -202,6 +203,11 @@ routes port folder db testsList =
         get "/test-list" (getTestList testsList)
         --  ^ Returns the list of tests with the status of the last run for them if any
         post "/test-list" (scheduleTest testsList)
+        --  ^ Returns the list of tests with the status of the last run for them if any
+        get "/group-sets" (listGroupSets db)
+        --  ^ Returns the list of tests group sets
+        post "/group-sets" (storeGroupSet db)
+        --  ^ Saves a group set in the database
 
 ----------------------------------
 -- Controllers
@@ -214,6 +220,30 @@ listRuns db = do
   where
     fetchRuns :: Text -> IO [P.Entity Run]
     fetchRuns match = runDbAction db $ findRunsByMatch match
+
+listGroupSets :: Database -> ActionM ()
+listGroupSets db = do
+    name <- optionalParam "name"
+    result <- liftAndCatchIO (fetchSets name)
+    json $ object ["groupSets" .= result, "success" .= True]
+  where
+    fetchSets :: Text -> IO [P.Entity GroupSet]
+    fetchSets name = runDbAction db $ findGroupSetsByName name
+
+storeGroupSet :: Database -> ActionM ()
+storeGroupSet db = do
+    name <- param "name"
+    description <- param "description"
+    liftAndCatchIO (storeSet name description)
+    json $ object ["success" .= True]
+    status ok200
+  where
+    storeSet :: Text -> Text -> IO ()
+    storeSet name desc = do
+        now <- getCurrentTime
+        runDbAction db $
+            P.insert_
+                GroupSet {groupSetName = name, groupSetDescription = desc, groupSetCreated = now}
 
 storeResults :: Database -> ActionM ()
 storeResults db = do
@@ -328,11 +358,20 @@ scheduleTest testsList = do
     cEnd <- readEither <$> param "concurrencyEnd"
     sSize <- readEither <$> param "stepSize"
     time <- Right . readMaybe <$> param "runTime" -- Read into a Maybe, then wrap with Right
+    groupSetId <- Right . readMaybe <$> optionalParam "groupSetId" -- Read into a Maybe, then wrap with Right
+    notes <- Right <$> param "notes"
     --
     -- The lazy way of checking for conversion errors
     -- We "unpack" the "Right" value from each var. If any "Left" is found
     -- The operation is aborted and the whole subroutine retuns "Left"
-    let allParams = (Scheduler.ScheduleOptions groupName) <$> cStart <*> cEnd <*> sSize <*> time
+    let allParams =
+            Scheduler.ScheduleOptions groupName <$> -- Build the options as we check their validity
+            cStart <*>
+            cEnd <*>
+            sSize <*>
+            time <*>
+            notes <*>
+            groupSetId
     case allParams of
         Left err -> handleError err
         Right schedule -> do

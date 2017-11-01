@@ -9,7 +9,7 @@ import Database.Persist (insert)
 import Invoker (Command(..), Concurrency(..))
 import Model
        (Database, Key, Run(..), RunGroup(..), WreckerRun(..),
-        findOrCreateGroupSet, runDbAction, storeRunResults)
+        findOrCreateGroupSet, runDbAction, storeRunResults, toKey)
 
 data RunGroupOptions = RunGroupOptions
     { title :: Text
@@ -18,6 +18,7 @@ data RunGroupOptions = RunGroupOptions
     , concurrencyTarget :: Int
     , rampupStep :: Int
     , runKeepTime :: Int
+    , groupSetId :: Maybe Int
     }
 
 createRunGroup :: Database -> RunGroupOptions -> IO (Key RunGroup)
@@ -25,10 +26,13 @@ createRunGroup db RunGroupOptions {..} = do
     now <- getCurrentTime
     runDbAction db $ do
         setId <-
-            findOrCreateGroupSet
-                "Default Set"
-                "When no group set is selected, the default one is used"
-                now
+            case groupSetId of
+                Nothing ->
+                    findOrCreateGroupSet
+                        "Default Set"
+                        "When no group set is selected, the default one is used"
+                        now
+                Just gId -> return (toKey gId)
         insert
             RunGroup
             { runGroupGroupSetId = setId

@@ -211,6 +211,10 @@ ul li a.selected {
 	font-size: 0.8em;
 }
 
+.group-set-button {
+	margin-left:20px;
+}
+
 
 /* Smaller screens */
 

@@ -23,6 +23,17 @@ type alias Stats =
     }
 
 
+{-| A GroupSet is a groupping for RunGroup. They are commonly used to test a particular
+test hypothesis, where many consecutive runs are needed for comparison.
+-}
+type alias GroupSet =
+    { id : Int
+    , name : String
+    , description : String
+    , created : Date.Date
+    }
+
+
 {-| Contains the info for a run group (a consecutive list of test runs using the same workflow)
 -}
 type alias RunGroup =
@@ -79,6 +90,15 @@ type alias Results =
 ---------------------------------------------
 --- JSON Decoding
 ---------------------------------------------
+
+
+decodeGroupSet : Decode.Decoder GroupSet
+decodeGroupSet =
+    Pipeline.decode GroupSet
+        |> Pipeline.required "id" Decode.int
+        |> Pipeline.required "name" Decode.string
+        |> Pipeline.required "description" Decode.string
+        |> Pipeline.required "created" (Decode.string |> Decode.andThen decodeDateTime)
 
 
 decodeRunGroup : Decode.Decoder RunGroup

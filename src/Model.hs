@@ -172,6 +172,14 @@ runMigrations db = runDbAction db (Sql.runMigration migrateAll)
 -------------------------------------
 -- Finder queries
 -------------------------------------
+findGroupSetsByName :: MonadIO m => Text -> SqlReadT m [Entity GroupSet]
+findGroupSetsByName match =
+    let matchWithExpanse = val ("%" <> match <> "%")
+    in select $
+       from $ \gs -> do
+           where_ (gs ^. GroupSetName `like` matchWithExpanse)
+           return gs
+
 findRunsByMatch :: MonadIO m => Text -> SqlReadT m [Entity Run]
 findRunsByMatch match =
     let matchWithExpanse = val ("%" <> match <> "%")
@@ -266,10 +274,10 @@ findPageStats runIds url = do
     buildIntermediate fields = set11Fields (Page Nothing (Just url)) fields
     setRunId (rId, page) = page {pageRunId = Just rId}
 
-toKey :: Int -> Key Run
-toKey key = Sql.toSqlKey . fromIntegral $ key
+toKey :: ToBackendKey SqlBackend a => Int -> Key a
+toKey = Sql.toSqlKey . fromIntegral
 
-fromKey :: Key Run -> Int
+fromKey ::ToBackendKey SqlBackend a  => Key a -> Int
 fromKey = fromIntegral . Sql.fromSqlKey
 
 set11Fields ::
@@ -330,6 +338,9 @@ findOrCreateGroupSet setName setDescription now = do
 -------------------------------------
 -- JSON conversions
 -------------------------------------
+instance ToJSON GroupSet where
+    toJSON = genericToJSON (defaultOptions {fieldLabelModifier = lcFirst . drop 8})
+
 instance ToJSON RunGroup where
     toJSON = genericToJSON (defaultOptions {fieldLabelModifier = lcFirst . drop 8})
 

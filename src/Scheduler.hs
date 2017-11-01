@@ -54,6 +54,8 @@ data ScheduleOptions = ScheduleOptions
     , cEnd :: Int -- ^ Concurrency end
     , sStep :: Int -- ^ Step size. This is the increment to use to get from start concurrency to end
     , time :: Maybe Int -- ^ The amount of time to spend on each of the individual runs
+    , notes :: Text -- ^ A description for the run group
+    , groupSetId :: Maybe Int -- ^ The group set the run will be attached to
     } deriving (Show)
 
 -- | A transactional memory variable containing the status fo the current run and the schedule for future runs
@@ -161,7 +163,7 @@ tryRunningNow config@Config {..} name opts@ScheduleOptions {..} = do
     STM.atomically (updateStatus testsList name (Running $ Just job))
   where
     runGroupOptions (Wrecker.Seconds secs) =
-        Recorder.RunGroupOptions gName "No notes" cStart cEnd sStep secs
+        Recorder.RunGroupOptions gName notes cStart cEnd sStep secs groupSetId
     createSteps =
         if cStart == 1 || cStart == 0
             then tail [0,sStep .. cEnd]
