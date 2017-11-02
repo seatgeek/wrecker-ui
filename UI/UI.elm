@@ -698,6 +698,7 @@ rightPlotPanel model =
                     , Html.map RunGroupPanelMsg <|
                         RunGroupPanel.view
                             (assignGroupColors model.currentRunGroups)
+                            model.filteredGroups
                             model.runGroupsPanel
                     ]
                 , div [ class "view-plot--right" ] [ rightmostPanel model ]

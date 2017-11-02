@@ -222,7 +222,7 @@ ul li a.selected {
 
 .run-group-panel--group {
 	margin-bottom: 20px;
-	border: 1px solid #ddd;
+	border-bottom: 1px solid #ddd;
 	padding: 10px;
 }
 

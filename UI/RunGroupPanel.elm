@@ -33,12 +33,18 @@ update msg model =
             { model | openPanels = model.openPanels |> List.filter ((/=) panel) }
 
 
-view : List ( String, RunGroup ) -> Model -> Html Msg
-view groups { openPanels } =
+view : List ( String, RunGroup ) -> List RunGroup -> Model -> Html Msg
+view groups filteredGroups { openPanels } =
     div [ class "run-group-panel" ]
         [ h3 [] [ text "Test Runs" ]
-        , div [] (List.map (panel openPanels) groups)
+        , div [] (List.map (panel openPanels) (onlyFiltered filteredGroups groups))
         ]
+
+
+onlyFiltered : List RunGroup -> List ( String, RunGroup ) -> List ( String, RunGroup )
+onlyFiltered filtered allGroups =
+    allGroups
+        |> List.filter (\( _, group ) -> filtered |> List.member group)
 
 
 panel : List Int -> ( String, RunGroup ) -> Html Msg
