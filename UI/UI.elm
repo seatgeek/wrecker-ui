@@ -19,6 +19,7 @@ import Time
 import Tuple
 import Util exposing (natSort, return)
 import ServerState
+import RunGroupPanel
 
 
 {-| Bolilerplate: Wires the application together
@@ -72,6 +73,7 @@ type alias Model =
     , currentScreen : Screen
     , schedulerState : Scheduler.Model
     , displayTestResults : Maybe String
+    , runGroupsPanel : RunGroupPanel.Model
     }
 
 
@@ -101,6 +103,7 @@ init location =
                 , currentScreen = PlotScreen
                 , schedulerState = schedulerModel
                 , displayTestResults = Nothing
+                , runGroupsPanel = RunGroupPanel.init
                 }
     in
         initialReturn
@@ -128,6 +131,7 @@ type Msg
     | SchedulerMsg Scheduler.Msg
     | ServerStateMsg ServerState.Msg
     | PollForResults String
+    | RunGroupPanelMsg RunGroupPanel.Msg
 
 
 
@@ -337,6 +341,9 @@ update msg model =
                     ServerState.update sMsg model.serverState
             in
                 ( { model | serverState = m }, Cmd.map ServerStateMsg c )
+
+        RunGroupPanelMsg rMsg ->
+            ( { model | runGroupsPanel = RunGroupPanel.update rMsg model.runGroupsPanel }, Cmd.none )
 
         PollForResults name ->
             return model
@@ -688,6 +695,10 @@ rightPlotPanel model =
                             model.filteredGroups
                             model.concurrencyComparison
                             (model.selectedPage |> Maybe.map (\(PageSelection _ p) -> p))
+                    , Html.map RunGroupPanelMsg <|
+                        RunGroupPanel.view
+                            (assignGroupColors model.currentRunGroups)
+                            model.runGroupsPanel
                     ]
                 , div [ class "view-plot--right" ] [ rightmostPanel model ]
                 ]

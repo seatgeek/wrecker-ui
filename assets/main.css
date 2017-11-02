@@ -215,6 +215,46 @@ ul li a.selected {
 	margin-left:20px;
 }
 
+.run-group-panel {
+	margin-top: 20px;
+	padding-left:80px;
+}
+
+.run-group-panel--group {
+	margin-bottom: 20px;
+	border: 1px solid #ddd;
+	padding: 10px;
+}
+
+.run-group-panel--group--header {
+	cursor: pointer;
+}
+
+.run-group-panel--group--item {
+	display: inline-block;
+	margin: 20px 20px 0 0;
+}
+
+.run-group-panel--group--title {
+	font-weight:bold;
+	font-size:14px;
+}
+
+.run-group-panel--group--value {
+	font-size: 14px;
+	margin: 5px 0 0 5px;
+}
+
+.run-group-panel--group--notes-title {
+	font-size: 16px;
+	margin: 20px 0 0 0;
+	clear:both;
+}
+
+.run-group-panel--group--notes {
+	font-size: 14px;
+}
+
 
 /* Smaller screens */
 

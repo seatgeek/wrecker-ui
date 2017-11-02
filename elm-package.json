@@ -19,7 +19,8 @@
         "elm-lang/svg": "2.0.0 <= v < 3.0.0",
         "evancz/url-parser": "2.0.1 <= v < 3.0.0",
         "myrho/elm-round": "1.0.2 <= v < 2.0.0",
-        "terezka/elm-plot": "5.1.0 <= v < 6.0.0"
+        "terezka/elm-plot": "5.1.0 <= v < 6.0.0",
+	"evancz/elm-markdown": "3.0.2 <= v < 4.0.0"
     },
     "dependency-sources" : {
         "elm-lang/navigation" : "git@github.com:lorenzo/navigation.git"
