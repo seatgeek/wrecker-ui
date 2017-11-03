@@ -74,6 +74,8 @@ type alias Model =
     , schedulerState : Scheduler.Model
     , displayTestResults : Maybe String
     , runGroupsPanel : RunGroupPanel.Model
+    , selectedGroupSet : Maybe GroupSet
+    , availableGroupSets : List GroupSet
     }
 
 
@@ -104,6 +106,8 @@ init location =
                 , schedulerState = schedulerModel
                 , displayTestResults = Nothing
                 , runGroupsPanel = RunGroupPanel.init
+                , selectedGroupSet = Nothing
+                , availableGroupSets = []
                 }
     in
         initialReturn
@@ -132,6 +136,7 @@ type Msg
     | ServerStateMsg ServerState.Msg
     | PollForResults String
     | RunGroupPanelMsg RunGroupPanel.Msg
+    | ChangeGroupSet Int
 
 
 
@@ -164,25 +169,32 @@ update msg model =
                 |> command (Router.modifyUrl (screenToRoute screen model))
 
         RunTitleClicked name ->
-            -- Similarly to clicking the search button, when clicming on one of the test
-            -- titles, we need to reset the previous results and then trigger the same
+            -- When clicking on one of the test titles, we need to reset the previous results and then trigger the same
             -- HTTP request to fetch new results.
-            model
-                |> startPollingForResults name
-                |> resetRunsState
-                |> return
-                |> command (Http.send LoadRunStats (getManyRuns name))
-                |> andThen updateTheUrl
+            loadRunsData name model.selectedGroupSet model
+
+        ChangeGroupSet setId ->
+            let
+                selectedSet =
+                    model.availableGroupSets
+                        |> List.filter (\set -> set.id == setId)
+                        |> List.head
+
+                testName =
+                    model.displayTestResults
+                        |> Maybe.withDefault ""
+            in
+                loadRunsData testName selectedSet model
 
         LoadRunStats (Err error) ->
             -- If there was an error loading the run stats, we just log it in the console
             debugError model "LoadRunStats" error
 
-        LoadRunStats (Ok { runs, pages, runGroups }) ->
+        LoadRunStats (Ok { runs, pages, runGroups, availableGroupSets }) ->
             -- But if we could successfully load the run stats, then we store the results and
             -- calculate run groups that need be shown
             { model | selectedPage = Nothing }
-                |> setRuns runs runGroups
+                |> setRuns runs runGroups availableGroupSets
                 |> setPageMap pages
                 |> return
 
@@ -210,18 +222,18 @@ update msg model =
             -- ... but an error happened
             debugError model "LoadFromLocation" error
 
-        LoadFromLocation (Ok ( { runs, pages, runGroups }, page, Just pageStats )) ->
+        LoadFromLocation (Ok ( { runs, pages, runGroups, availableGroupSets }, page, Just pageStats )) ->
             -- This is the case when we want to re-construct the state from the browser URL
             model
-                |> setRuns runs runGroups
+                |> setRuns runs runGroups availableGroupSets
                 |> setPageMap pages
                 |> setPageSelection page pageStats
                 |> return
 
-        LoadFromLocation (Ok ( { runs, pages, runGroups }, _, Nothing )) ->
+        LoadFromLocation (Ok ( { runs, pages, runGroups, availableGroupSets }, _, Nothing )) ->
             -- This is the case when we want to re-construct the state from the browser URL
             { model | selectedPage = Nothing }
-                |> setRuns runs runGroups
+                |> setRuns runs runGroups availableGroupSets
                 |> setPageMap pages
                 |> return
 
@@ -351,9 +363,24 @@ update msg model =
                     (loadRunThenPage
                         RefreshRunStats
                         (Just name)
+                        model.selectedGroupSet
                         (model.selectedPage |> Maybe.map (\(PageSelection n _) -> n))
                     )
                 |> command (Cmd.map ServerStateMsg <| Tuple.second ServerState.init)
+
+
+{-| An update helper function that is responsible for setting the test name to show results for
+and filter by a particular group set. It will command the fetching of results and the changing
+of the URL.
+-}
+loadRunsData : String -> Maybe GroupSet -> Model -> ( Model, Cmd Msg )
+loadRunsData testName selectedSet model =
+    model
+        |> startPollingForResults testName selectedSet
+        |> resetRunsState
+        |> return
+        |> command (Http.send LoadRunStats (getManyRuns testName selectedSet))
+        |> andThen updateTheUrl
 
 
 setRoute : Maybe Router.Route -> Model -> ( Model, Cmd Msg )
@@ -372,13 +399,13 @@ setRoute maybeRoute model =
             { model | displayTestResults = maybeTestName }
                 |> setGraphByIndex plotIndex
                 |> return
-                |> command (loadRunThenPage LoadFromLocation maybeTestName maybePageName)
+                |> command (loadRunThenPage LoadFromLocation maybeTestName Nothing maybePageName)
 
         Just (Router.ComparisonPlot plotIndex level maybeTestName maybePageName) ->
             { model | concurrencyComparison = Just level, displayTestResults = maybeTestName }
                 |> setGraphByIndex plotIndex
                 |> return
-                |> command (loadRunThenPage LoadFromLocation maybeTestName maybePageName)
+                |> command (loadRunThenPage LoadFromLocation maybeTestName Nothing maybePageName)
 
 
 changeScreen : Screen -> Model -> ( Model, Cmd Msg )
@@ -422,12 +449,13 @@ setGraphByIndex index model =
         { model | graph = Maybe.withDefault model.graph graph }
 
 
-setRuns : List Run -> List RunGroup -> Model -> Model
-setRuns runs runGroups model =
+setRuns : List Run -> List RunGroup -> List GroupSet -> Model -> Model
+setRuns runs runGroups availableGroupSets model =
     { model
         | runs = runs
         , currentRunGroups = runGroups
         , filteredGroups = runGroups
+        , availableGroupSets = availableGroupSets
     }
 
 
@@ -450,9 +478,9 @@ setPageSelection page pages model =
         { model | selectedPage = Just (PageSelection page indexed) }
 
 
-startPollingForResults : String -> Model -> Model
-startPollingForResults testName model =
-    { model | displayTestResults = Just testName }
+startPollingForResults : String -> Maybe GroupSet -> Model -> Model
+startPollingForResults testName selectedSet model =
+    { model | displayTestResults = Just testName, selectedGroupSet = selectedSet }
 
 
 debugError : Model -> String -> a -> ( Model, Cmd msg )
@@ -468,9 +496,9 @@ type alias ReloadAction =
     Result Http.Error ( Results, String, Maybe (List Page) ) -> Msg
 
 
-loadRunThenPage : ReloadAction -> Maybe String -> Maybe String -> Cmd Msg
-loadRunThenPage action maybeTestName maybePageName =
-    getManyRuns (Maybe.withDefault "__" maybeTestName)
+loadRunThenPage : ReloadAction -> Maybe String -> Maybe GroupSet -> Maybe String -> Cmd Msg
+loadRunThenPage action maybeTestName maybeGroupSet maybePageName =
+    getManyRuns (Maybe.withDefault "__" maybeTestName) maybeGroupSet
         |> Http.toTask
         |> Task.andThen
             (\({ runs, pages } as results) ->
@@ -552,19 +580,20 @@ updateTheUrl m =
 -----------------------
 
 
-{-| Returns a Request object that can be used to load the list of runnable tests.
--}
-getRunsTitles : Http.Request (List String)
-getRunsTitles =
-    Http.get "/test-list"
-        (Decode.field "tests" (Decode.dict Decode.string |> Decode.map Dict.keys))
-
-
 {-| Returns a Request object that can be used to load a list of run statistics
 -}
-getManyRuns : String -> Http.Request Results
-getManyRuns match =
-    Http.get ("/runs/rollup/?match=" ++ Http.encodeUri match) decodeResults
+getManyRuns : String -> Maybe GroupSet -> Http.Request Results
+getManyRuns match groupSet =
+    let
+        groupSetParam =
+            case groupSet of
+                Just set ->
+                    "&groupSet=" ++ Http.encodeUri (fromInt set.id)
+
+                _ ->
+                    ""
+    in
+        Http.get ("/runs/rollup/?match=" ++ Http.encodeUri match ++ groupSetParam) decodeResults
 
 
 {-| Returns a Request object that can be used to load a list of page statistics
@@ -708,9 +737,9 @@ rightPlotPanel model =
 {-| Renders the right column where the graph selector and lists of pages reside
 -}
 rightmostPanel : Model -> Html Msg
-rightmostPanel { graph, currentRunGroups, filteredGroups, runs, pages, concurrencyComparison, selectedPage, serverState } =
+rightmostPanel { graph, currentRunGroups, filteredGroups, runs, pages, concurrencyComparison, selectedPage, serverState, selectedGroupSet, availableGroupSets } =
     div []
-        [ groupSetFilter serverState.groupSets
+        [ groupSetFilter selectedGroupSet availableGroupSets
         , graphTypeOptions graph
         , concurrencySelector concurrencyComparison runs
         , runGroupsList currentRunGroups filteredGroups
@@ -720,14 +749,21 @@ rightmostPanel { graph, currentRunGroups, filteredGroups, runs, pages, concurren
         ]
 
 
-groupSetFilter : List GroupSet -> Html Msg
-groupSetFilter sets =
-    select [] ([ option [ value "" ] [ text "- All Sets -" ] ] ++ (List.map groupSetOption sets))
+groupSetFilter : Maybe GroupSet -> List GroupSet -> Html Msg
+groupSetFilter selectedSet sets =
+    select [ onChange (String.toInt >> Result.withDefault -1 >> ChangeGroupSet) ]
+        ([ option [ value "" ] [ text "- All Sets -" ] ] ++ (List.map (groupSetOption selectedSet) sets))
 
 
-groupSetOption : GroupSet -> Html Msg
-groupSetOption { id, name } =
-    option [ value <| fromInt id ] [ text name ]
+groupSetOption : Maybe GroupSet -> GroupSet -> Html Msg
+groupSetOption selectedGroupSet { id, name } =
+    let
+        isSelected =
+            selectedGroupSet
+                |> Maybe.map (\s -> s.id == id)
+                |> Maybe.withDefault False
+    in
+        option [ value <| fromInt id, selected isSelected ] [ text name ]
 
 
 graphTypeOptions : Title -> Html Msg

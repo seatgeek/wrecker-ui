@@ -83,6 +83,7 @@ type alias Results =
     { runs : List Run
     , pages : Dict String (List Int)
     , runGroups : List RunGroup
+    , availableGroupSets : List GroupSet
     }
 
 
@@ -162,6 +163,7 @@ decodeResults =
         |> Pipeline.required "runs" (Decode.list decodeRun)
         |> Pipeline.required "pages" (Decode.dict (Decode.list Decode.int))
         |> Pipeline.required "runGroups" (Decode.list decodeRunGroup)
+        |> Pipeline.required "availableGroupSets" (Decode.list decodeGroupSet)
 
 
 decodeDateTime : String -> Decode.Decoder Date.Date

@@ -14,6 +14,7 @@ import Data.Text (Text)
 import qualified Data.Text as Text
 import Data.Text.Encoding (encodeUtf8)
 import qualified Data.Text.Internal.Lazy as LText
+import Data.Time.Clock (getCurrentTime)
 import Database.PostgreSQL.Simple.URL (parseDatabaseUrl)
 import Network.HTTP.Types
 import Network.HostAndPort (hostAndPort)
@@ -22,16 +23,16 @@ import qualified System.Directory as Dir
 import System.Environment (lookupEnv)
 import Text.Read (readMaybe)
 import Web.Scotty
-import Data.Time.Clock (getCurrentTime)
 
 import qualified Database.Persist as P
 import qualified Database.Persist.Sql as Sql
 import Model
        (Database, DbBackend(..), GroupSet(..), Key, LogLevel(..),
         Page(..), Rollup(..), Run(..), RunGroup, TransactionMonad,
-        WreckerRun(..), findGroupSetsByName, findPageStats, findPagesList,
-        findRunGroups, findRunStats, findRuns, findRunsByMatch,
-        runDbAction, runMigrations, storeRunResults, withDb)
+        WreckerRun(..), findGroupSetsByName, findGroupSetsByRunMatch,
+        findPageStats, findPagesList, findRunGroups, findRunStats,
+        findRuns, findRunsByMatchAndSet, runDbAction, runMigrations,
+        storeRunResults, withDb)
 
 import Control.Distributed.Process (NodeId(..), Process)
 import qualified Control.Distributed.Process.Backend.SimpleLocalnet
@@ -215,11 +216,12 @@ routes port folder db testsList =
 listRuns :: Database -> ActionM ()
 listRuns db = do
     match <- optionalParam "match"
-    result <- liftAndCatchIO (fetchRuns match)
+    groupSet <- readMaybe <$> optionalParam "groupSet"
+    result <- liftAndCatchIO (fetchRuns match groupSet)
     json $ object ["runs" .= result, "success" .= True]
   where
-    fetchRuns :: Text -> IO [P.Entity Run]
-    fetchRuns match = runDbAction db $ findRunsByMatch match
+    fetchRuns :: Text -> Maybe Int -> IO [P.Entity Run]
+    fetchRuns match groupSet = runDbAction db $ findRunsByMatchAndSet match groupSet
 
 listGroupSets :: Database -> ActionM ()
 listGroupSets db = do
@@ -314,16 +316,30 @@ fetchRunStats runId = do
 getManyRuns :: Database -> ActionM ()
 getManyRuns db = do
     allIds <- idsOrMatch db
+    match <- optionalParam "match"
     case allIds of
         [] -> errorResponse "Invalid list of ids"
         _ -> do
-            result <- liftAndCatchIO (runDbAction db $ fetchRunStats allIds)
-            sendResult result
+            (result, sets) <-
+                liftAndCatchIO $
+                runDbAction db $ do
+                    stats <- fetchRunStats allIds
+                    if match == ""
+                        then return (stats, Nothing)
+                        else do
+                            availableSets <- findGroupSetsByRunMatch match
+                            return (stats, Just availableSets)
+            sendResult result sets
   where
-    sendResult (results, pages, runGroups) = do
+    sendResult (results, pages, runGroups) sets = do
         let buildObject (run, stats) = object ["run" .= run, "stats" .= stats]
         json $
-            object ["runs" .= fmap buildObject results, "pages" .= pages, "runGroups" .= runGroups]
+            object
+                [ "runs" .= fmap buildObject results
+                , "pages" .= pages
+                , "runGroups" .= runGroups
+                , "availableGroupSets" .= sets
+                ]
         status ok200
     -- | Responds with a JSON error
     --
@@ -414,7 +430,8 @@ idsOrMatch db = do
   where
     idsFromMatch = do
         match <- param "match"
-        runs <- liftAndCatchIO (runDbAction db $ findRunsByMatch match)
+        groupSet <- readMaybe <$> optionalParam "groupSet"
+        runs <- liftAndCatchIO (runDbAction db $ findRunsByMatchAndSet match groupSet)
         return (fmap (fromIntegral . Sql.fromSqlKey . P.entityKey) runs)
 
 toSqlKey :: Int -> Key Run

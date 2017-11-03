@@ -14,10 +14,12 @@
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE StrictData #-}
 {-# LANGUAGE DeriveDataTypeable #-}
+{-# LANGUAGE TypeApplications #-}
 {-# OPTIONS_GHC -fno-warn-orphans #-}
 
 module Model where
 
+import Control.Monad (unless)
 import Control.Monad.IO.Class (MonadIO)
 import Control.Monad.Logger
        (LoggingT(..), filterLogger, runStdoutLoggingT)
@@ -30,6 +32,7 @@ import Data.Binary (Binary(..))
 import Data.Char (toLower)
 import qualified Data.Map as Map
 import Data.Map (Map)
+import qualified Data.Maybe
 import Data.Monoid ((<>))
 import Data.Pool (Pool)
 import Data.Ratio (numerator)
@@ -180,12 +183,25 @@ findGroupSetsByName match =
            where_ (gs ^. GroupSetName `like` matchWithExpanse)
            return gs
 
-findRunsByMatch :: MonadIO m => Text -> SqlReadT m [Entity Run]
-findRunsByMatch match =
+findGroupSetsByRunMatch :: MonadIO m => Text -> SqlReadT m [Entity GroupSet]
+findGroupSetsByRunMatch match =
+    let matchWithExpanse = val ("%" <> match <> "%")
+    in select $ distinct $
+       from $ \(r, rg, gs) -> do
+           where_ (r ^. RunRunGroupId ==. rg ^. RunGroupId)
+           where_ (rg ^. RunGroupGroupSetId ==. gs ^. GroupSetId)
+           where_ (r ^. RunMatch `like` matchWithExpanse)
+           return gs
+
+findRunsByMatchAndSet :: MonadIO m => Text -> Maybe Int -> SqlReadT m [Entity Run]
+findRunsByMatchAndSet match groupSetId =
     let matchWithExpanse = val ("%" <> match <> "%")
     in select $
-       from $ \r -> do
+       from $ \(r `InnerJoin` rg) -> do
+           on (r ^. RunRunGroupId ==. rg ^. RunGroupId)
            where_ (r ^. RunMatch `like` matchWithExpanse)
+           unless (Data.Maybe.isNothing groupSetId) $
+               where_ (rg ^. RunGroupGroupSetId ==. val (toKey $ Data.Maybe.fromMaybe 0 groupSetId))
            return r
 
 findRuns :: MonadIO m => [Key Run] -> SqlReadT m [Entity Run]
@@ -277,7 +293,7 @@ findPageStats runIds url = do
 toKey :: ToBackendKey SqlBackend a => Int -> Key a
 toKey = Sql.toSqlKey . fromIntegral
 
-fromKey ::ToBackendKey SqlBackend a  => Key a -> Int
+fromKey :: ToBackendKey SqlBackend a => Key a -> Int
 fromKey = fromIntegral . Sql.fromSqlKey
 
 set11Fields ::
