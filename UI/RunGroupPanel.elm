@@ -6,11 +6,16 @@ import Html.Events exposing (..)
 import String.Extra exposing (fromInt)
 import Data exposing (RunGroup)
 import Markdown
+import Date.Format
 
 
 type alias Model =
     { openPanels : List Int
     }
+
+
+type alias FilteredGroups =
+    List RunGroup
 
 
 type Msg
@@ -33,7 +38,7 @@ update msg model =
             { model | openPanels = model.openPanels |> List.filter ((/=) panel) }
 
 
-view : List ( String, RunGroup ) -> List RunGroup -> Model -> Html Msg
+view : List ( String, RunGroup ) -> FilteredGroups -> Model -> Html Msg
 view groups filteredGroups { openPanels } =
     div [ class "run-group-panel" ]
         [ h3 [] [ text "Test Runs" ]
@@ -41,7 +46,7 @@ view groups filteredGroups { openPanels } =
         ]
 
 
-onlyFiltered : List RunGroup -> List ( String, RunGroup ) -> List ( String, RunGroup )
+onlyFiltered : FilteredGroups -> List ( String, RunGroup ) -> List ( String, RunGroup )
 onlyFiltered filtered allGroups =
     allGroups
         |> List.filter (\( _, group ) -> filtered |> List.member group)
@@ -80,6 +85,7 @@ panelDetails group =
         , panelItem "Concurrency Target" (fromInt group.concurrencyTarget)
         , panelItem "Step Size" (fromInt group.rampupStep)
         , panelItem "Step duration time" (fromInt group.runKeepTime ++ " secs")
+        , panelItem "Run started" (Date.Format.format "%Y-%m-%d %H:%I:%S" group.created)
         , h5 [ class "run-group-panel--group--notes-title" ] [ text "Notes" ]
         , Markdown.toHtml [ class "run-group-panel--group--notes" ] group.notes
         ]

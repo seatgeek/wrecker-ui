@@ -1,6 +1,6 @@
 module Main exposing (..)
 
-import Data exposing (Run, Page, RunInfo, Results, RunGroup, decodeRunInfo, decodeRun, decodePage, decodeResults)
+import Data exposing (Run, Page, RunInfo, Results, RunGroup, GroupSet, decodeRunInfo, decodeRun, decodePage, decodeResults)
 import Dict exposing (Dict)
 import Graph exposing (..)
 import Html exposing (..)
@@ -708,24 +708,40 @@ rightPlotPanel model =
 {-| Renders the right column where the graph selector and lists of pages reside
 -}
 rightmostPanel : Model -> Html Msg
-rightmostPanel { graph, currentRunGroups, filteredGroups, runs, pages, concurrencyComparison, selectedPage } =
+rightmostPanel { graph, currentRunGroups, filteredGroups, runs, pages, concurrencyComparison, selectedPage, serverState } =
     div []
-        [ select [ onChange ChangeGraphType ] (List.map (renderGraphItem graph) validGraphs)
-        , renderConcurrencySelector concurrencyComparison runs
-        , renderGroups currentRunGroups filteredGroups
+        [ groupSetFilter serverState.groupSets
+        , graphTypeOptions graph
+        , concurrencySelector concurrencyComparison runs
+        , runGroupsList currentRunGroups filteredGroups
         , h4 [] [ text "Pages" ]
-        , renderPageList (extractSelectedPage selectedPage) pages
+        , pagesList (extractSelectedPage selectedPage) pages
         , div [ class "scrollFader" ] []
         ]
 
 
-renderGraphItem : Title -> ( Title, Graph ) -> Html msg
-renderGraphItem current ( title, _ ) =
+groupSetFilter : List GroupSet -> Html Msg
+groupSetFilter sets =
+    select [] ([ option [ value "" ] [ text "- All Sets -" ] ] ++ (List.map groupSetOption sets))
+
+
+groupSetOption : GroupSet -> Html Msg
+groupSetOption { id, name } =
+    option [ value <| fromInt id ] [ text name ]
+
+
+graphTypeOptions : Title -> Html Msg
+graphTypeOptions graph =
+    select [ onChange ChangeGraphType ] (List.map (graphTypeOption graph) validGraphs)
+
+
+graphTypeOption : Title -> ( Title, Graph ) -> Html msg
+graphTypeOption current ( title, _ ) =
     option [ value title, selected (current == title) ] [ text title ]
 
 
-renderConcurrencySelector : Maybe Int -> List Run -> Html Msg
-renderConcurrencySelector current runs =
+concurrencySelector : Maybe Int -> List Run -> Html Msg
+concurrencySelector current runs =
     case current of
         Nothing ->
             text ""
@@ -744,17 +760,17 @@ renderConcurrencySelector current runs =
                 select [ onChangeInt ChangeConcurrencyComparison ] (List.map buildOption levels)
 
 
-renderGroups : List RunGroup -> List RunGroup -> Html Msg
-renderGroups allGroups filteredGroups =
+runGroupsList : List RunGroup -> List RunGroup -> Html Msg
+runGroupsList allGroups filteredGroups =
     ul []
         (List.map
-            (renderGroupItem filteredGroups)
+            (groupItem filteredGroups)
             (assignGroupColors allGroups)
         )
 
 
-renderGroupItem : List RunGroup -> ( String, RunGroup ) -> Html Msg
-renderGroupItem filtered ( color, runGroup ) =
+groupItem : List RunGroup -> ( String, RunGroup ) -> Html Msg
+groupItem filtered ( color, runGroup ) =
     let
         isFiltered =
             case filtered of
@@ -779,13 +795,13 @@ renderGroupItem filtered ( color, runGroup ) =
             ]
 
 
-renderPageList : String -> Dict String (List Int) -> Html Msg
-renderPageList selected pages =
-    ul [ class "view-plot--right__pages" ] (List.map (renderPageItem selected) (Dict.keys pages))
+pagesList : String -> Dict String (List Int) -> Html Msg
+pagesList selected pages =
+    ul [ class "view-plot--right__pages" ] (List.map (pageItem selected) (Dict.keys pages))
 
 
-renderPageItem : String -> String -> Html Msg
-renderPageItem selected page =
+pageItem : String -> String -> Html Msg
+pageItem selected page =
     let
         classes =
             [ ( "selected", selected == page ) ]
