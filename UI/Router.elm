@@ -3,6 +3,7 @@ module Router exposing (Route(..), modifyUrl, fromLocation)
 import UrlParser as Url exposing (parseHash, s, (<?>), (</>), stringParam, intParam, int, oneOf, Parser)
 import Navigation exposing (Location)
 import Http
+import String.Extra exposing (fromInt)
 
 
 -- ROUTING --
@@ -24,11 +25,15 @@ type alias ConcurrencyLevel =
     Int
 
 
+type alias GroupSetId =
+    Maybe Int
+
+
 type Route
     = Home
     | ScheduleTest
-    | SimplePlot PlotType TestName PageName
-    | ComparisonPlot PlotType ConcurrencyLevel TestName PageName
+    | SimplePlot PlotType TestName PageName GroupSetId
+    | ComparisonPlot PlotType ConcurrencyLevel TestName PageName GroupSetId
 
 
 route : Parser (Route -> a) a
@@ -36,8 +41,8 @@ route =
     oneOf
         [ Url.map Home (s "")
         , Url.map ScheduleTest (s "schedule")
-        , Url.map SimplePlot (s "plot" </> int <?> stringParam "test" <?> stringParam "page")
-        , Url.map ComparisonPlot (s "comparison" </> int </> int <?> stringParam "test" <?> stringParam "page")
+        , Url.map SimplePlot (s "plot" </> int <?> stringParam "test" <?> stringParam "page" <?> intParam "groupSet")
+        , Url.map ComparisonPlot (s "comparison" </> int </> int <?> stringParam "test" <?> stringParam "page" <?> intParam "groupSet")
         ]
 
 
@@ -56,11 +61,21 @@ routeToString page =
                 ScheduleTest ->
                     ( [ "schedule" ], [] )
 
-                SimplePlot plotType testName pageName ->
-                    ( [ "plot", toString plotType ], [ ( "test", testName ), ( "page", pageName ) ] )
+                SimplePlot plotType testName pageName groupSetId ->
+                    ( [ "plot", toString plotType ]
+                    , [ ( "test", testName )
+                      , ( "page", pageName )
+                      , ( "groupSet", groupSetId |> Maybe.map fromInt )
+                      ]
+                    )
 
-                ComparisonPlot plotType concurrency testName pageName ->
-                    ( [ "plot", toString plotType, toString concurrency ], [ ( "test", testName ), ( "page", pageName ) ] )
+                ComparisonPlot plotType concurrency testName pageName groupSetId ->
+                    ( [ "plot", toString plotType, toString concurrency ]
+                    , [ ( "test", testName )
+                      , ( "page", pageName )
+                      , ( "groupSet", groupSetId |> Maybe.map fromInt )
+                      ]
+                    )
     in
         toQueryString query ++ "#/" ++ (String.join "/" path)
 

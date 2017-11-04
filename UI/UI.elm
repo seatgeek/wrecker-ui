@@ -122,8 +122,8 @@ type Msg
     = SetRoute (Maybe Router.Route)
     | LoadRunStats (Result Http.Error Results)
     | LoadPageStats (Result Http.Error (List Page))
-    | LoadFromLocation (Result Http.Error ( Results, String, Maybe (List Page) ))
-    | RefreshRunStats (Result Http.Error ( Results, String, Maybe (List Page) ))
+    | LoadFromLocation (Result Http.Error ( Results, String, Maybe (List Page), Maybe Int ))
+    | RefreshRunStats (Result Http.Error ( Results, String, Maybe (List Page), Maybe Int ))
     | GraphMsg Graph.Msg
     | RunTitleClicked String
     | ChangeGraphType String
@@ -222,19 +222,21 @@ update msg model =
             -- ... but an error happened
             debugError model "LoadFromLocation" error
 
-        LoadFromLocation (Ok ( { runs, pages, runGroups, availableGroupSets }, page, Just pageStats )) ->
+        LoadFromLocation (Ok ( { runs, pages, runGroups, availableGroupSets }, page, Just pageStats, selectedGroupSet )) ->
             -- This is the case when we want to re-construct the state from the browser URL
             model
                 |> setRuns runs runGroups availableGroupSets
                 |> setPageMap pages
                 |> setPageSelection page pageStats
+                |> setGroupSetSelection selectedGroupSet availableGroupSets
                 |> return
 
-        LoadFromLocation (Ok ( { runs, pages, runGroups, availableGroupSets }, _, Nothing )) ->
+        LoadFromLocation (Ok ( { runs, pages, runGroups, availableGroupSets }, _, Nothing, selectedGroupSet )) ->
             -- This is the case when we want to re-construct the state from the browser URL
             { model | selectedPage = Nothing }
                 |> setRuns runs runGroups availableGroupSets
                 |> setPageMap pages
+                |> setGroupSetSelection selectedGroupSet availableGroupSets
                 |> return
 
         RefreshRunStats (Err error) ->
@@ -242,17 +244,19 @@ update msg model =
             -- ... but an error happened
             debugError model "RefreshRunStats" error
 
-        RefreshRunStats (Ok ( { runs, pages }, page, Just pageStats )) ->
+        RefreshRunStats (Ok ( { runs, pages, runGroups, availableGroupSets }, page, Just pageStats, selectedGroupSet )) ->
             -- This is the case when we want to re-construct the state from the browser URL
-            { model | runs = runs }
+            { model | runs = runs, availableGroupSets = availableGroupSets, currentRunGroups = runGroups }
                 |> setPageMap pages
                 |> setPageSelection page pageStats
+                |> setGroupSetSelection selectedGroupSet availableGroupSets
                 |> return
 
-        RefreshRunStats (Ok ( { runs, pages }, _, Nothing )) ->
+        RefreshRunStats (Ok ( { runs, pages, runGroups, availableGroupSets }, _, Nothing, selectedGroupSet )) ->
             -- This is the case when we want to re-construct the state from the browser URL
-            { model | runs = runs }
+            { model | runs = runs, availableGroupSets = availableGroupSets, currentRunGroups = runGroups }
                 |> setPageMap pages
+                |> setGroupSetSelection selectedGroupSet availableGroupSets
                 |> return
 
         GraphMsg gMsg ->
@@ -363,7 +367,7 @@ update msg model =
                     (loadRunThenPage
                         RefreshRunStats
                         (Just name)
-                        model.selectedGroupSet
+                        (Maybe.map .id model.selectedGroupSet)
                         (model.selectedPage |> Maybe.map (\(PageSelection n _) -> n))
                     )
                 |> command (Cmd.map ServerStateMsg <| Tuple.second ServerState.init)
@@ -379,7 +383,7 @@ loadRunsData testName selectedSet model =
         |> startPollingForResults testName selectedSet
         |> resetRunsState
         |> return
-        |> command (Http.send LoadRunStats (getManyRuns testName selectedSet))
+        |> command (Http.send LoadRunStats (getManyRuns testName (Maybe.map .id selectedSet)))
         |> andThen updateTheUrl
 
 
@@ -395,17 +399,19 @@ setRoute maybeRoute model =
         Just Router.ScheduleTest ->
             changeScreen ScheduleRunScreen model
 
-        Just (Router.SimplePlot plotIndex maybeTestName maybePageName) ->
+        Just (Router.SimplePlot plotIndex maybeTestName maybePageName maybeSetId) ->
             { model | displayTestResults = maybeTestName }
                 |> setGraphByIndex plotIndex
                 |> return
-                |> command (loadRunThenPage LoadFromLocation maybeTestName Nothing maybePageName)
+                |> command
+                    (loadRunThenPage LoadFromLocation maybeTestName maybeSetId maybePageName)
 
-        Just (Router.ComparisonPlot plotIndex level maybeTestName maybePageName) ->
+        Just (Router.ComparisonPlot plotIndex level maybeTestName maybePageName maybeSetId) ->
             { model | concurrencyComparison = Just level, displayTestResults = maybeTestName }
                 |> setGraphByIndex plotIndex
                 |> return
-                |> command (loadRunThenPage LoadFromLocation maybeTestName Nothing maybePageName)
+                |> command
+                    (loadRunThenPage LoadFromLocation maybeTestName maybeSetId maybePageName)
 
 
 changeScreen : Screen -> Model -> ( Model, Cmd Msg )
@@ -433,6 +439,9 @@ resetRunsState model =
     { model
         | runs = []
         , filteredGroups = []
+        , currentRunGroups = []
+        , availableGroupSets = []
+        , selectedGroupSet = Nothing
     }
 
 
@@ -478,6 +487,17 @@ setPageSelection page pages model =
         { model | selectedPage = Just (PageSelection page indexed) }
 
 
+setGroupSetSelection : Maybe Int -> List GroupSet -> Model -> Model
+setGroupSetSelection maybeId groupSets model =
+    let
+        groupSetFromId =
+            groupSets
+                |> List.filter (\set -> Just set.id == maybeId)
+                |> List.head
+    in
+        { model | selectedGroupSet = groupSetFromId }
+
+
 startPollingForResults : String -> Maybe GroupSet -> Model -> Model
 startPollingForResults testName selectedSet model =
     { model | displayTestResults = Just testName, selectedGroupSet = selectedSet }
@@ -493,10 +513,10 @@ debugError model place err =
 
 
 type alias ReloadAction =
-    Result Http.Error ( Results, String, Maybe (List Page) ) -> Msg
+    Result Http.Error ( Results, String, Maybe (List Page), Maybe Int ) -> Msg
 
 
-loadRunThenPage : ReloadAction -> Maybe String -> Maybe GroupSet -> Maybe String -> Cmd Msg
+loadRunThenPage : ReloadAction -> Maybe String -> Maybe Int -> Maybe String -> Cmd Msg
 loadRunThenPage action maybeTestName maybeGroupSet maybePageName =
     getManyRuns (Maybe.withDefault "__" maybeTestName) maybeGroupSet
         |> Http.toTask
@@ -504,12 +524,12 @@ loadRunThenPage action maybeTestName maybeGroupSet maybePageName =
             (\({ runs, pages } as results) ->
                 case maybePageName of
                     Nothing ->
-                        Task.succeed (Ok ( results, "", Nothing ))
+                        Task.succeed (Ok ( results, "", Nothing, maybeGroupSet ))
 
                     Just page ->
                         getPageByRuns runs page
                             |> Http.toTask
-                            |> Task.andThen (\stats -> Task.succeed (Ok ( results, page, Just stats )))
+                            |> Task.andThen (\stats -> Task.succeed (Ok ( results, page, Just stats, maybeGroupSet )))
             )
         |> Task.onError (\e -> Task.succeed (Err e))
         |> Task.perform action
@@ -563,10 +583,19 @@ buildPlotRoute model =
                         Router.Home
 
                     Just ( index, Scatter _ _ _ _ ) ->
-                        Router.SimplePlot index model.displayTestResults page
+                        Router.SimplePlot
+                            index
+                            model.displayTestResults
+                            page
+                            (model.selectedGroupSet |> Maybe.map .id)
 
                     Just ( index, _ ) ->
-                        Router.ComparisonPlot index level model.displayTestResults page
+                        Router.ComparisonPlot
+                            index
+                            level
+                            model.displayTestResults
+                            page
+                            (model.selectedGroupSet |> Maybe.map .id)
 
 
 updateTheUrl : Model -> ( Model, Cmd Msg )
@@ -582,13 +611,13 @@ updateTheUrl m =
 
 {-| Returns a Request object that can be used to load a list of run statistics
 -}
-getManyRuns : String -> Maybe GroupSet -> Http.Request Results
+getManyRuns : String -> Maybe Int -> Http.Request Results
 getManyRuns match groupSet =
     let
         groupSetParam =
             case groupSet of
                 Just set ->
-                    "&groupSet=" ++ Http.encodeUri (fromInt set.id)
+                    "&groupSet=" ++ Http.encodeUri (fromInt set)
 
                 _ ->
                     ""
@@ -751,8 +780,15 @@ rightmostPanel { graph, currentRunGroups, filteredGroups, runs, pages, concurren
 
 groupSetFilter : Maybe GroupSet -> List GroupSet -> Html Msg
 groupSetFilter selectedSet sets =
-    select [ onChange (String.toInt >> Result.withDefault -1 >> ChangeGroupSet) ]
-        ([ option [ value "" ] [ text "- All Sets -" ] ] ++ (List.map (groupSetOption selectedSet) sets))
+    let
+        _ =
+            Debug.log "crazy dog" sets
+
+        _ =
+            Debug.log "selected dog" selectedSet
+    in
+        select [ onChange (String.toInt >> Result.withDefault -1 >> ChangeGroupSet) ]
+            ([ option [ value "" ] [ text "- All Sets -" ] ] ++ (List.map (groupSetOption selectedSet) sets))
 
 
 groupSetOption : Maybe GroupSet -> GroupSet -> Html Msg
