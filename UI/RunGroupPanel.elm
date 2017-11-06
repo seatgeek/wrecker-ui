@@ -1,4 +1,9 @@
-module RunGroupPanel exposing (view, Model, update, init, Msg)
+module RunGroupPanel exposing (view, update, init, Model, Msg)
+
+{-| Contains the functions to display and update the list of run groups for a particular test.
+The list of run gorups is a lis of expandable panels that display the details for a particular
+scheduled test.
+-}
 
 import Html exposing (..)
 import Html.Attributes exposing (..)

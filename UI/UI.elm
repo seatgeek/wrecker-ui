@@ -171,7 +171,8 @@ update msg model =
         RunTitleClicked name ->
             -- When clicking on one of the test titles, we need to reset the previous results and then trigger the same
             -- HTTP request to fetch new results.
-            loadRunsData name model.selectedGroupSet model
+            { model | selectedGroupSet = Nothing }
+                |> loadRunsData name Nothing
 
         ChangeGroupSet setId ->
             let
@@ -439,9 +440,6 @@ resetRunsState model =
     { model
         | runs = []
         , filteredGroups = []
-        , currentRunGroups = []
-        , availableGroupSets = []
-        , selectedGroupSet = Nothing
     }
 
 
