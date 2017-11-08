@@ -10,6 +10,7 @@ import Http
 import Json.Decode as Decode
 import Data exposing (GroupSet, decodeGroupSet)
 import ServerState exposing (TestList(..), RunStatus(..))
+import Util exposing (onChange)
 
 
 {-| It is possibible to parametrize test runs in the server. This type contains the fields
@@ -47,6 +48,7 @@ type SchedulerField
     | StepSize
     | RunTime
     | Notes
+    | GroupSetOption
 
 
 type Msg
@@ -258,6 +260,9 @@ updateOptions field value opts =
         RunTime ->
             { opts | runTime = String.toInt value |> Result.withDefault opts.runTime }
 
+        GroupSetOption ->
+            { opts | groupSetId = String.toInt value |> Result.toMaybe }
+
 
 
 --------------------
@@ -338,7 +343,7 @@ renderOptions options groupSets =
         div [ class "view-plot--right__concurrency" ]
             [ label []
                 [ span [] [ text "Test Set" ]
-                , select [] (List.map groupSetOption groupSets)
+                , select [ onChange (SchedulerFieldChanged GroupSetOption) ] (List.map groupSetOption groupSets)
                 ]
             , label [ classList [ ( "field-error", emptyAnnotation ) ] ]
                 [ span [] [ text "Test Annotation *" ]
