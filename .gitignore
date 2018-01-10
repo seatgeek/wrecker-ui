@@ -12,3 +12,4 @@ wrecker-ui-*
 assets/app.js
 *.db
 release.json
+wrecker-ui.cabal
