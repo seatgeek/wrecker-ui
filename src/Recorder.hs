@@ -4,7 +4,7 @@ module Recorder where
 
 import Data.Either (lefts, rights)
 import Data.Text (Text)
-import Data.Time.Clock (UTCTime, getCurrentTime)
+import Data.Time.Clock (getCurrentTime)
 import Database.Persist (insert)
 import Invoker (Command(..), Concurrency(..))
 import Model

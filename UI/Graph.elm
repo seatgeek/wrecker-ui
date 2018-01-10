@@ -138,9 +138,17 @@ validGraphs =
         -- field and then get its concurrency field
         baseScatter =
             Scatter "Concurrency" "Resp. Time (s)" (.run >> .concurrency >> toFloat)
+
+        totalScatter =
+            Scatter "Concurrency" "Total" (.run >> .concurrency >> toFloat)
     in
         [ ( "Mean Time / Concurrency", baseScatter (.stats >> .meanTime) )
         , ( "Percentile 95 / Concurrency", baseScatter (.stats >> .quantile95) )
+        , ( "Total Requests / Concurrency", totalScatter (.stats >> .hits >> toFloat) )
+        , ( "Failed Requests / Concurrency", totalScatter (.stats >> (\s -> s.serverErrorHits + s.failedHits) >> toFloat) )
+        , ( "2xx Requests / Concurrency", totalScatter (.stats >> .successHits >> toFloat) )
+        , ( "4xx Requests / Concurrency", totalScatter (.stats >> .userErrorHits >> toFloat) )
+        , ( "Requests per second / Concurrency", totalScatter (\s -> toFloat s.stats.hits / s.stats.totalTime) )
         , ( "Fastest Time / Concurrency", baseScatter (.stats >> .minTime) )
         , ( "Slowest Time / Concurrency", baseScatter (.stats >> .maxTime) )
         , ( "Aggregated Time / Concurrency", baseScatter (.stats >> .totalTime) )
@@ -407,7 +415,7 @@ scatterPlot xGetter yGetter hinting =
 circle : String -> Float -> Float -> Svg Msg
 circle color x y =
     Svg.circle
-        [ r "5"
+        [ r "3"
         , stroke "transparent"
         , strokeWidth "3px"
         , fill color

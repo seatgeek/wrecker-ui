@@ -53,11 +53,11 @@ executable          wrecker-ui
                   , iso8601-time
                   , stm
                   , async
-                  , distributed-process
-                  , network-transport
+                  , distributed-process >= 0.7.3
+                  , network-transport >= 0.5.2
                   , network-transport-tcp
-                  , distributed-process-simplelocalnet
-                  , distributed-process-async
+                  , distributed-process-simplelocalnet >= 0.2.4
+                  , distributed-process-async >= 0.2.4.2
                   , distributed-static
                   , binary
                   , mtl

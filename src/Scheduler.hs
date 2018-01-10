@@ -22,10 +22,7 @@ import qualified Data.Map as Map
 import Data.Map (Map)
 import qualified Data.Maybe as Maybe
 import Data.Maybe (fromMaybe)
-import Data.Monoid ((<>))
 import Data.Text (Text, pack)
-import Data.Time.Clock (getCurrentTime)
-import Data.Time.ISO8601 (formatISO8601)
 import qualified Invoker as Wrecker
 import Model (Database, Key, RunGroup, WreckerRun)
 import Prelude hiding ((!!))
@@ -152,7 +149,7 @@ addToQueue name schedule testsList =
 -- | Checks wheter or not it is possible to executing the give run right now and
 -- if possible, it executes it immediately.
 tryRunningNow :: Config -> Text -> ScheduleOptions -> IO ()
-tryRunningNow config@Config {..} name opts@ScheduleOptions {..} = do
+tryRunningNow config@Config {..} name ScheduleOptions {..} = do
     let secs = Wrecker.Seconds (fromMaybe 10 time) -- Run for 10 seconds if no preference was given
     canRun <- STM.atomically (markAsRunning testsList name)
     guard canRun
