@@ -165,12 +165,12 @@ getStaticSlaves = do
             return (fmap (builder . Text.pack) (rights parsed))
   where
     parseNodes str =
-        let splitted = Text.splitOn "," str
+        let splitted = filter (/= Text.empty) (Text.strip <$> Text.splitOn "," str)
         in fmap (ensurePort . validate) splitted
     validate s = (s, hostAndPort (Text.unpack s))
-    ensurePort (s, (Left _)) = Left ("Invalid slave address: " <> s)
-    ensurePort (s, (Right (_, Nothing))) = Left ("Invalid slave address. Missing port for: " <> s)
-    ensurePort (_, (Right ((host, Just port)))) = Right (host <> ":" <> port)
+    ensurePort (s, Left _) = Left ("Invalid slave address: " <> s)
+    ensurePort (s, Right (_, Nothing)) = Left ("Invalid slave address. Missing port for: " <> s)
+    ensurePort (_, Right (host, Just port)) = Right (host <> ":" <> port)
 
 ----------------------------------
 -- Routes and middleware
