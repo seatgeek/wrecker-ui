@@ -141,6 +141,9 @@ validGraphs =
 
         totalScatter =
             Scatter "Concurrency" "Total" (.run >> .concurrency >> toFloat)
+
+        throughput =
+            Scatter "Concurrency" "Users/sec" (.run >> .concurrency >> toFloat)
     in
         [ ( "Mean Time / Concurrency", baseScatter (.stats >> .meanTime) )
         , ( "Percentile 95 / Concurrency", baseScatter (.stats >> .quantile95) )
@@ -148,7 +151,7 @@ validGraphs =
         , ( "Failed Requests / Concurrency", totalScatter (.stats >> (\s -> s.serverErrorHits + s.failedHits) >> toFloat) )
         , ( "2xx Requests / Concurrency", totalScatter (.stats >> .successHits >> toFloat) )
         , ( "4xx Requests / Concurrency", totalScatter (.stats >> .userErrorHits >> toFloat) )
-        , ( "Requests per second / Concurrency", totalScatter (\s -> toFloat s.stats.hits / s.stats.totalTime) )
+        , ( "Throughput / Concurrency", throughput (\s -> toFloat s.run.concurrency / s.stats.meanTime) )
         , ( "Fastest Time / Concurrency", baseScatter (.stats >> .minTime) )
         , ( "Slowest Time / Concurrency", baseScatter (.stats >> .maxTime) )
         , ( "Aggregated Time / Concurrency", baseScatter (.stats >> .totalTime) )

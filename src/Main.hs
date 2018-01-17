@@ -146,11 +146,12 @@ selectDatabaseType = do
             putStrLn "Using SQLite"
             return Sqlite
         Just info ->
-            case parseDatabaseUrl info of
-                Nothing -> error "Invalid WRECKER_DB url"
-                Just connDetails -> do
-                    putStrLn "Using PostgreSQL"
-                    return (Postgresql connDetails)
+            let protocolFixedInfo = Text.replace "postgresql://" "postgres://" (Text.pack info)
+            in case parseDatabaseUrl (Text.unpack protocolFixedInfo) of
+                   Nothing -> error "Invalid WRECKER_DB url"
+                   Just connDetails -> do
+                       putStrLn "Using PostgreSQL"
+                       return (Postgresql connDetails)
 
 getStaticSlaves :: IO [NodeId]
 getStaticSlaves = do

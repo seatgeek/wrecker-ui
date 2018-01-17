@@ -197,12 +197,12 @@ remoteWrecker slaves command@Wrecker.Command {concurrency} = do
     divideWork nodes@(selfNode :| _) =
         let Wrecker.Concurrency conc_ = concurrency
             conc = fromIntegral conc_
-        in if null slaves || conc < 2000
+        in if null slaves || conc < 20
                then [buildTask command selfNode]
                else let (first:rest) =
                             [ nodes !! (i - 1) -- Return the node at position i
                             | i <- [1 .. length nodes] -- Select one more node
-                            , (conc / fromIntegral i) >= 1000 -- If there are at least 1000 threads to run on it
+                            , (conc / fromIntegral i) >= 10 -- If there are at least 10 threads to run on it
                             ]
                         -- Calculate the number of threads per task to execute
                         total = fromIntegral (length (first : rest)) -- Get the total available workers
@@ -214,7 +214,7 @@ remoteWrecker slaves command@Wrecker.Command {concurrency} = do
                         setConcurrency c = command {Wrecker.concurrency = Wrecker.Concurrency c}
                         --
                         -- Build the async tasks that should be executed
-                        firstTask = buildTask (setConcurrency remainderConcurrency) first -- First task gets teh remainder
+                        firstTask = buildTask (setConcurrency remainderConcurrency) first -- First task gets the remainder
                         restTasks = fmap (buildTask (setConcurrency avgConcurrency)) rest -- But the rest get the same amount of threads
                     in firstTask : restTasks
 
