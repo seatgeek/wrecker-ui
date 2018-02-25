@@ -90,6 +90,7 @@ a:hover {
 
 
 .view-plot--left { 
+	font-size: 13px;
 	padding-right: 3em;
 	width: 75%;
 }

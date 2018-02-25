@@ -2,10 +2,13 @@ module Main exposing (..)
 
 import Data exposing (Run, Page, RunInfo, Results, RunGroup, GroupSet, decodeRunInfo, decodeRun, decodePage, decodeResults)
 import Dict exposing (Dict)
-import Graph exposing (..)
+import Dict.Extra exposing (filterGroupBy)
+import Graph
+import Graph.Types exposing (Title)
 import Html exposing (..)
 import Html.Attributes exposing (..)
 import Html.Events exposing (..)
+import Html.Lazy as Lazy
 import Http
 import Json.Decode as Decode
 import List.Extra as EList
@@ -20,6 +23,8 @@ import Tuple
 import Util exposing (natSort, return, onEnter, onChange, onChangeInt)
 import ServerState
 import RunGroupPanel
+import Graph.Coloring exposing (pickColor)
+import Color.Convert exposing (colorToHex)
 
 
 {-| Bolilerplate: Wires the application together
@@ -447,7 +452,7 @@ setGraphByIndex : Int -> Model -> Model
 setGraphByIndex index model =
     let
         graph =
-            validGraphs
+            Graph.validGraphs
                 |> List.indexedMap (\ix graph -> ( ix, graph ))
                 |> List.filter (\( ix, _ ) -> ix == index)
                 |> List.head
@@ -553,7 +558,7 @@ buildPlotRoute : Model -> Router.Route
 buildPlotRoute model =
     let
         graphIndex =
-            validGraphs
+            Graph.validGraphs
                 |> List.indexedMap
                     (\index ( t, g ) ->
                         if t == model.graph then
@@ -580,7 +585,7 @@ buildPlotRoute model =
                     Nothing ->
                         Router.Home
 
-                    Just ( index, Scatter _ _ _ _ ) ->
+                    Just ( index, Graph.Scatter _ _ _ _ ) ->
                         Router.SimplePlot
                             index
                             model.displayTestResults
@@ -658,7 +663,9 @@ view model =
     div []
         [ div [ class "view" ]
             [ div [ class "view--left" ]
-                [ leftPanel model.currentScreen
+                [ Lazy.lazy3
+                    leftPanel
+                    model.currentScreen
                     model.displayTestResults
                     model.serverState.testList
                 ]
@@ -743,22 +750,65 @@ rightPlotPanel model =
             div [ class "view-plot view-plot__closed" ]
                 [ div [ class "view-plot--left" ]
                     [ Html.map GraphMsg <|
-                        plotRuns
+                        Graph.view
                             model.graphState
                             model.graph
-                            model.currentRunGroups
-                            model.runs
-                            model.filteredGroups
-                            model.concurrencyComparison
-                            (model.selectedPage |> Maybe.map (\(PageSelection _ p) -> p))
+                            (indexedBy .id model.currentRunGroups)
+                            (selectRunData model)
                     , Html.map RunGroupPanelMsg <|
-                        RunGroupPanel.view
-                            (assignGroupColors model.currentRunGroups)
+                        Lazy.lazy3 RunGroupPanel.view
+                            model.currentRunGroups
                             model.filteredGroups
                             model.runGroupsPanel
                     ]
                 , div [ class "view-plot--right" ] [ rightmostPanel model ]
                 ]
+
+
+indexedBy : (v -> comparable) -> List v -> Dict comparable v
+indexedBy getter list =
+    list
+        |> List.map (\elem -> ( getter elem, elem ))
+        |> Dict.fromList
+
+
+selectRunData : Model -> Dict Int (List Run)
+selectRunData { selectedPage, filteredGroups, runs } =
+    let
+        groups =
+            filteredGroups
+                |> indexedBy .id
+
+        existsInFiltered runGroupId =
+            case Dict.get runGroupId groups of
+                Nothing ->
+                    Nothing
+
+                Just _ ->
+                    Just runGroupId
+    in
+        runs
+            |> filterGroupBy (.run >> .runGroupId >> existsInFiltered)
+
+
+selectData : Maybe PageSelection -> List Run -> List Run
+selectData pages runs =
+    case pages of
+        Nothing ->
+            runs
+
+        Just (PageSelection _ pageStats) ->
+            runs
+                |> List.filterMap
+                    (\r ->
+                        case Dict.get r.run.id pageStats of
+                            Nothing ->
+                                Nothing
+
+                            Just { stats } ->
+                                -- Replace the run stats with the page stats
+                                Just { r | stats = stats }
+                    )
 
 
 {-| Renders the right column where the graph selector and lists of pages reside
@@ -769,7 +819,7 @@ rightmostPanel { graph, currentRunGroups, filteredGroups, runs, pages, concurren
         [ groupSetFilter selectedGroupSet availableGroupSets
         , graphTypeOptions graph
         , concurrencySelector concurrencyComparison runs
-        , runGroupsList currentRunGroups filteredGroups
+        , Lazy.lazy2 runGroupsList currentRunGroups filteredGroups
         , h4 [] [ text "Pages" ]
         , pagesList (extractSelectedPage selectedPage) pages
         , div [ class "scrollFader" ] []
@@ -778,15 +828,8 @@ rightmostPanel { graph, currentRunGroups, filteredGroups, runs, pages, concurren
 
 groupSetFilter : Maybe GroupSet -> List GroupSet -> Html Msg
 groupSetFilter selectedSet sets =
-    let
-        _ =
-            Debug.log "crazy dog" sets
-
-        _ =
-            Debug.log "selected dog" selectedSet
-    in
-        select [ onChange (String.toInt >> Result.withDefault -1 >> ChangeGroupSet) ]
-            ([ option [ value "" ] [ text "- All Sets -" ] ] ++ (List.map (groupSetOption selectedSet) sets))
+    select [ onChange (String.toInt >> Result.withDefault -1 >> ChangeGroupSet) ]
+        ([ option [ value "" ] [ text "- All Sets -" ] ] ++ (List.map (groupSetOption selectedSet) sets))
 
 
 groupSetOption : Maybe GroupSet -> GroupSet -> Html Msg
@@ -802,10 +845,10 @@ groupSetOption selectedGroupSet { id, name } =
 
 graphTypeOptions : Title -> Html Msg
 graphTypeOptions graph =
-    select [ onChange ChangeGraphType ] (List.map (graphTypeOption graph) validGraphs)
+    select [ onChange ChangeGraphType ] (List.map (graphTypeOption graph) Graph.validGraphs)
 
 
-graphTypeOption : Title -> ( Title, Graph ) -> Html msg
+graphTypeOption : Title -> ( Title, Graph.Graph ) -> Html msg
 graphTypeOption current ( title, _ ) =
     option [ value title, selected (current == title) ] [ text title ]
 
@@ -833,14 +876,13 @@ concurrencySelector current runs =
 runGroupsList : List RunGroup -> List RunGroup -> Html Msg
 runGroupsList allGroups filteredGroups =
     ul []
-        (List.map
-            (groupItem filteredGroups)
-            (assignGroupColors allGroups)
+        (allGroups
+            |> List.map (groupItem filteredGroups)
         )
 
 
-groupItem : List RunGroup -> ( String, RunGroup ) -> Html Msg
-groupItem filtered ( color, runGroup ) =
+groupItem : List RunGroup -> RunGroup -> Html Msg
+groupItem filtered runGroup =
     let
         isFiltered =
             case filtered of
@@ -851,6 +893,9 @@ groupItem filtered ( color, runGroup ) =
                     filtered
                         |> List.filter ((==) runGroup)
                         |> List.isEmpty
+
+        color =
+            pickColor runGroup.id
     in
         li
             [ style [ ( "cursor", "pointer" ) ]
@@ -859,7 +904,7 @@ groupItem filtered ( color, runGroup ) =
             , onDoubleClick (ShowOnlyGroup runGroup.id)
             ]
             [ span
-                [ style [ ( "color", color ), ( "font-size", "25px" ) ] ]
+                [ style [ ( "color", colorToHex color ), ( "font-size", "25px" ) ] ]
                 [ text "●", text " " ]
             , text runGroup.title
             ]

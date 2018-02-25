@@ -12,6 +12,8 @@ import String.Extra exposing (fromInt)
 import Data exposing (RunGroup)
 import Markdown
 import Date.Format
+import Graph.Coloring exposing (pickColor)
+import Color.Convert exposing (colorToHex)
 
 
 type alias Model =
@@ -43,7 +45,7 @@ update msg model =
             { model | openPanels = model.openPanels |> List.filter ((/=) panel) }
 
 
-view : List ( String, RunGroup ) -> FilteredGroups -> Model -> Html Msg
+view : List RunGroup -> FilteredGroups -> Model -> Html Msg
 view groups filteredGroups { openPanels } =
     div [ class "run-group-panel" ]
         [ h3 [] [ text "Test Runs" ]
@@ -51,14 +53,14 @@ view groups filteredGroups { openPanels } =
         ]
 
 
-onlyFiltered : FilteredGroups -> List ( String, RunGroup ) -> List ( String, RunGroup )
+onlyFiltered : FilteredGroups -> List RunGroup -> List RunGroup
 onlyFiltered filtered allGroups =
     allGroups
-        |> List.filter (\( _, group ) -> filtered |> List.member group)
+        |> List.filter (\group -> filtered |> List.member group)
 
 
-panel : List Int -> ( String, RunGroup ) -> Html Msg
-panel openPanels ( color, group ) =
+panel : List Int -> RunGroup -> Html Msg
+panel openPanels group =
     let
         expanded =
             List.member group.id openPanels
@@ -68,11 +70,14 @@ panel openPanels ( color, group ) =
                 Collapse
             else
                 Expand
+
+        color =
+            pickColor group.id
     in
         div [ class "run-group-panel--group" ]
             [ div [ class "run-group-panel--group--header", onClick (msg group.id) ]
                 [ span
-                    [ style [ ( "color", color ) ] ]
+                    [ style [ ( "color", colorToHex color ) ] ]
                     [ text "●", text " " ]
                 , text group.title
                 ]
