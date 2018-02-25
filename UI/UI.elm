@@ -68,6 +68,7 @@ and the rest of the UI
 type alias Model =
     { serverState : ServerState.State
     , runs : List Run
+    , runLoadNumber : Int -- To prevent displaying old results, we keep a counter
     , pages : Dict String (List Int) -- A reverse map of the pages tested for the loaded run stats
     , graph : Title
     , graphState : Graph.Model
@@ -100,6 +101,7 @@ init location =
             setRoute (Router.fromLocation location)
                 { serverState = serverState
                 , runs = []
+                , runLoadNumber = 0
                 , pages = Dict.empty
                 , graph = "Mean Time / Concurrency"
                 , graphState = Graph.defaultModel
@@ -125,7 +127,7 @@ application. Each action contains a set of arguments associated with it.
 -}
 type Msg
     = SetRoute (Maybe Router.Route)
-    | LoadRunStats (Result Http.Error Results)
+    | LoadRunStats Int (Result Http.Error Results)
     | LoadPageStats (Result Http.Error (List Page))
     | LoadFromLocation (Result Http.Error ( Results, String, Maybe (List Page), Maybe Int ))
     | RefreshRunStats (Result Http.Error ( Results, String, Maybe (List Page), Maybe Int ))
@@ -192,17 +194,21 @@ update msg model =
             in
                 loadRunsData testName selectedSet model
 
-        LoadRunStats (Err error) ->
+        LoadRunStats _ (Err error) ->
             -- If there was an error loading the run stats, we just log it in the console
             debugError model "LoadRunStats" error
 
-        LoadRunStats (Ok { runs, pages, runGroups, availableGroupSets }) ->
+        LoadRunStats loadNumber (Ok { runs, pages, runGroups, availableGroupSets }) ->
             -- But if we could successfully load the run stats, then we store the results and
             -- calculate run groups that need be shown
-            { model | selectedPage = Nothing }
-                |> setRuns runs runGroups availableGroupSets
-                |> setPageMap pages
-                |> return
+            if model.runLoadNumber > loadNumber then
+                -- If we got old results from the server, discard them
+                ( model, Cmd.none )
+            else
+                { model | selectedPage = Nothing, runLoadNumber = loadNumber }
+                    |> setRuns runs runGroups availableGroupSets
+                    |> setPageMap pages
+                    |> return
 
         LoadPageStats (Err error) ->
             -- If there was an error loading the page stats, we just log it in the console
@@ -385,12 +391,16 @@ of the URL.
 -}
 loadRunsData : String -> Maybe GroupSet -> Model -> ( Model, Cmd Msg )
 loadRunsData testName selectedSet model =
-    model
-        |> startPollingForResults testName selectedSet
-        |> resetRunsState
-        |> return
-        |> command (Http.send LoadRunStats (getManyRuns testName (Maybe.map .id selectedSet)))
-        |> andThen updateTheUrl
+    let
+        newRunNumber =
+            model.runLoadNumber + 1
+    in
+        { model | runLoadNumber = newRunNumber }
+            |> startPollingForResults testName selectedSet
+            |> resetRunsState
+            |> return
+            |> command (Http.send (LoadRunStats newRunNumber) (getManyRuns testName (Maybe.map .id selectedSet)))
+            |> andThen updateTheUrl
 
 
 setRoute : Maybe Router.Route -> Model -> ( Model, Cmd Msg )
