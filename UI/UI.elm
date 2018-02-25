@@ -625,7 +625,7 @@ getManyRuns match groupSet =
                 _ ->
                     ""
     in
-        Http.get ("/runs/rollup/?match=" ++ Http.encodeUri match ++ groupSetParam) decodeResults
+        Http.get ("/runs/rollup/?groupLimit=30&match=" ++ Http.encodeUri match ++ groupSetParam) decodeResults
 
 
 {-| Returns a Request object that can be used to load a list of page statistics
@@ -877,6 +877,8 @@ runGroupsList : List RunGroup -> List RunGroup -> Html Msg
 runGroupsList allGroups filteredGroups =
     ul []
         (allGroups
+            |> List.sortBy .id
+            |> List.reverse
             |> List.map (groupItem filteredGroups)
         )
 

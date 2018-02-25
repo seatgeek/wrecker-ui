@@ -222,7 +222,7 @@ listRuns db = do
     json $ object ["runs" .= result, "success" .= True]
   where
     fetchRuns :: Text -> Maybe Int -> IO [P.Entity Run]
-    fetchRuns match groupSet = runDbAction db $ findRunsByMatchAndSet match groupSet
+    fetchRuns match groupSet = runDbAction db $ findRunsByMatchAndSet match groupSet Nothing
 
 listGroupSets :: Database -> ActionM ()
 listGroupSets db = do
@@ -431,8 +431,9 @@ idsOrMatch db = do
   where
     idsFromMatch = do
         match <- param "match"
+        runGroupLimit <- readMaybe <$> optionalParam "groupLimit"
         groupSet <- readMaybe <$> optionalParam "groupSet"
-        runs <- liftAndCatchIO (runDbAction db $ findRunsByMatchAndSet match groupSet)
+        runs <- liftAndCatchIO (runDbAction db $ findRunsByMatchAndSet match groupSet runGroupLimit)
         return (fmap (fromIntegral . Sql.fromSqlKey . P.entityKey) runs)
 
 toSqlKey :: Int -> Key Run

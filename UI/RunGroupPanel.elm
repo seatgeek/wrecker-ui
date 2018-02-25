@@ -57,6 +57,8 @@ onlyFiltered : FilteredGroups -> List RunGroup -> List RunGroup
 onlyFiltered filtered allGroups =
     allGroups
         |> List.filter (\group -> filtered |> List.member group)
+        |> List.sortBy .id
+        |> List.reverse
 
 
 panel : List Int -> RunGroup -> Html Msg

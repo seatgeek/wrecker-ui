@@ -186,23 +186,41 @@ findGroupSetsByName match =
 findGroupSetsByRunMatch :: MonadIO m => Text -> SqlReadT m [Entity GroupSet]
 findGroupSetsByRunMatch match =
     let matchWithExpanse = val ("%" <> match <> "%")
-    in select $ distinct $
+    in select $
+       distinct $
        from $ \(r, rg, gs) -> do
            where_ (r ^. RunRunGroupId ==. rg ^. RunGroupId)
            where_ (rg ^. RunGroupGroupSetId ==. gs ^. GroupSetId)
            where_ (r ^. RunMatch `like` matchWithExpanse)
            return gs
 
-findRunsByMatchAndSet :: MonadIO m => Text -> Maybe Int -> SqlReadT m [Entity Run]
-findRunsByMatchAndSet match groupSetId =
-    let matchWithExpanse = val ("%" <> match <> "%")
-    in select $
-       from $ \(r `InnerJoin` rg) -> do
-           on (r ^. RunRunGroupId ==. rg ^. RunGroupId)
-           where_ (r ^. RunMatch `like` matchWithExpanse)
-           unless (Data.Maybe.isNothing groupSetId) $
-               where_ (rg ^. RunGroupGroupSetId ==. val (toKey $ Data.Maybe.fromMaybe 0 groupSetId))
-           return r
+findRunsByMatchAndSet ::
+       MonadIO m
+    => Text -- ^ The test title
+    -> Maybe Int -- ^ Optionally the groupset id to filter on
+    -> Maybe Int -- ^ Optionally limit the number of distinct run gorups
+    -> SqlReadT m [Entity Run]
+findRunsByMatchAndSet match groupSetId runGroupLimit =
+    select $
+    from $ \r -> do
+        where_ (r ^. RunRunGroupId `in_` subList_select countFilter)
+        return r
+  where
+    matchFilter =
+        let matchWithExpanse = val ("%" <> match <> "%")
+        in from $ \r -> do
+               where_ (r ^. RunMatch `like` matchWithExpanse)
+               return $ r ^. RunRunGroupId
+    countFilter =
+        from $ \rg -> do
+            where_ (rg ^. RunGroupId `in_` subList_select matchFilter)
+            unless (Data.Maybe.isNothing groupSetId) $
+                where_
+                    (rg ^. RunGroupGroupSetId ==. val (toKey $ Data.Maybe.fromMaybe 0 groupSetId))
+            orderBy [desc (rg ^. RunGroupCreated)]
+            unless (Data.Maybe.isNothing runGroupLimit) $
+                limit $ fromIntegral (Data.Maybe.fromMaybe 1 runGroupLimit)
+            return $ rg ^. RunGroupId
 
 findRuns :: MonadIO m => [Key Run] -> SqlReadT m [Entity Run]
 findRuns keys =
