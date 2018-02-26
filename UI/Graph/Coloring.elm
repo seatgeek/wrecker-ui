@@ -28,7 +28,6 @@ allColors =
     , black
     , gray
     , grayLight
-    , grayLightest
     ]
 
 
