@@ -798,11 +798,12 @@ selectRunData { selectedPage, filteredGroups, runs } =
                     Just runGroupId
     in
         runs
+            |> pageOrRunData selectedPage
             |> filterGroupBy (.run >> .runGroupId >> existsInFiltered)
 
 
-selectData : Maybe PageSelection -> List Run -> List Run
-selectData pages runs =
+pageOrRunData : Maybe PageSelection -> List Run -> List Run
+pageOrRunData pages runs =
     case pages of
         Nothing ->
             runs
